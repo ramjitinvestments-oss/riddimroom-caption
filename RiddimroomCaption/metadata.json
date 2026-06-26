@@ -1,0 +1,6 @@
+{
+  "name": "RiddimroomCaption",
+  "description": "An interactive tropical-inspired video editor to automatically transcribe, style, and burn vibrant animated subtitles onto social reels and Tiktok clips.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
