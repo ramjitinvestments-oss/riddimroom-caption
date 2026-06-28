@@ -1,0 +1,88 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User account details, role, and transcription quota tracking",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "description": "Primary email of the user"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User display name"
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "User profile avatar image URL"
+        },
+        "dailyCount": {
+          "type": "integer",
+          "description": "Number of transcriptions performed today"
+        },
+        "lastTranscribeDate": {
+          "type": "string",
+          "description": "The date of the last transcription (YYYY-MM-DD)"
+        },
+        "role": {
+          "type": "string",
+          "description": "User access tier role (admin or user)"
+        },
+        "totalTranscribes": {
+          "type": "integer",
+          "description": "Total transcriptions performed across all time"
+        },
+        "lastUpdated": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last update"
+        }
+      },
+      "required": ["email", "displayName", "role"]
+    },
+    "TranscriptionLog": {
+      "title": "Transcription Log",
+      "description": "Log of transcription events for analysis and limits",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "User UID who requested the transcription"
+        },
+        "email": {
+          "type": "string",
+          "description": "User email address"
+        },
+        "videoName": {
+          "type": "string",
+          "description": "Name or identifier of the video/audio transcribed"
+        },
+        "duration": {
+          "type": "number",
+          "description": "Duration of the media in seconds"
+        },
+        "engine": {
+          "type": "string",
+          "description": "Engine used for transcription (e.g. Gemini, Whisper)"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the transcription"
+        }
+      },
+      "required": ["uid", "email", "timestamp"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "User accounts and subscription/quota data"
+    },
+    "transcription_logs/{logId}": {
+      "schema": "TranscriptionLog",
+      "description": "Activity logs of all media transcriptions"
+    }
+  }
+}

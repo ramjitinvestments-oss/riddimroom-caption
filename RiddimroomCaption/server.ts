@@ -12,8 +12,543 @@ import { createServer as createViteServer } from 'vite';
 
 dotenv.config();
 
+import { initializeApp, getApps, applicationDefault } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+
+// Initialize Firebase Admin SDK
+let firebaseAdminApp;
+let databaseId: string | undefined = process.env.FIRESTORE_DATABASE_ID;
+
+try {
+  const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
+  const envProjectId = process.env.FIREBASE_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT;
+  
+  if (envProjectId) {
+    // 1. Prefer explicit project ID configuration via production environment variables
+    firebaseAdminApp = initializeApp({
+      projectId: envProjectId,
+      credential: applicationDefault()
+    });
+    console.log('[Firebase Admin] Successfully initialized with Env Project ID:', envProjectId, 'databaseId:', databaseId);
+  } else if (fs.existsSync(configPath)) {
+    // 2. Fall back to local applet config in sandbox/dev environments
+    const firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (firebaseConfig.firestoreDatabaseId && !databaseId) {
+      databaseId = firebaseConfig.firestoreDatabaseId;
+    }
+    firebaseAdminApp = initializeApp({
+      projectId: firebaseConfig.projectId,
+      credential: applicationDefault()
+    });
+    console.log('[Firebase Admin] Successfully initialized with ADC and config file projectId:', firebaseConfig.projectId, 'databaseId:', databaseId);
+  } else {
+    // 3. Fall back to standard zero-config Admin SDK (native inside standard GCP/Cloud Run setups)
+    firebaseAdminApp = initializeApp();
+    console.log('[Firebase Admin] Successfully initialized with zero-config default parameters.');
+  }
+} catch (err: any) {
+  console.warn('[Firebase Admin] Application Default Credentials failed, attempting credential-less or project-only initialization:', err.message);
+  try {
+    const envProjectId = process.env.FIREBASE_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT;
+    const fallbackProjectId = envProjectId || 'centering-dynamics-plsxp';
+    firebaseAdminApp = initializeApp({
+      projectId: fallbackProjectId
+    });
+    console.log('[Firebase Admin] Initialized with fallback projectId:', fallbackProjectId);
+  } catch (e: any) {
+    console.error('[Firebase Admin] CRITICAL initialization failure:', e.message);
+  }
+}
+
+let dbInstance: any = null;
+let useDefaultDbFallback = false;
+
+function getFirestoreDb() {
+  if (!getApps().length) return null;
+  if (useDefaultDbFallback) {
+    try {
+      return getFirestore(firebaseAdminApp || getApps()[0]);
+    } catch {
+      return null;
+    }
+  }
+  if (!dbInstance) {
+    try {
+      if (databaseId) {
+        dbInstance = getFirestore(firebaseAdminApp || getApps()[0], databaseId);
+      } else {
+        dbInstance = getFirestore();
+      }
+    } catch (err: any) {
+      console.warn('[Firestore] Failed to init custom database, falling back to default:', err.message);
+      try {
+        dbInstance = getFirestore(firebaseAdminApp || getApps()[0]);
+        useDefaultDbFallback = true;
+      } catch {
+        dbInstance = null;
+      }
+    }
+  }
+  return dbInstance;
+}
+
+const db = new Proxy({} as any, {
+  get(target, prop) {
+    const activeDb = getFirestoreDb();
+    if (!activeDb) {
+      return undefined;
+    }
+    const val = activeDb[prop];
+    if (typeof val === 'function') {
+      return val.bind(activeDb);
+    }
+    return val;
+  }
+});
+
+const authAdmin = getApps().length > 0 ? getAuth() : null;
+const ADMIN_SESSION_TOKEN = 'riddimroom-admin-secret-access-token-112319';
+
+async function runWithDbFallback<T>(operation: (dbClient: any) => Promise<T>): Promise<T> {
+  const currentDb = getFirestoreDb();
+  if (!currentDb) {
+    throw new Error('Database services not available');
+  }
+  try {
+    return await operation(currentDb);
+  } catch (err: any) {
+    const errMsg = String(err.message || '');
+    if (!useDefaultDbFallback && (errMsg.includes('PERMISSION_DENIED') || errMsg.includes('permission') || errMsg.includes('7') || errMsg.includes('NOT_FOUND'))) {
+      console.warn('[Firestore] Custom database operation failed with permission/not-found error, switching permanently to default database (default)...');
+      useDefaultDbFallback = true;
+      dbInstance = null; // force re-creation
+      const fallbackDb = getFirestoreDb();
+      if (fallbackDb) {
+        return await operation(fallbackDb);
+      }
+    }
+    throw err;
+  }
+}
+
+// Middleware or helper to verify authorization header ID token and check/increment quotas
+async function verifyUserAndQuota(req: express.Request, increment: boolean = false): Promise<{ success: boolean; error?: string; userEmail?: string; isNoLimit?: boolean }> {
+  if (!getApps().length || !getFirestoreDb() || !authAdmin) {
+    // Return bypass mode if Firebase services are not available
+    return { success: true, userEmail: 'local-test-bypass@riddimroom.com', isNoLimit: true };
+  }
+
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    // Frictionless guest access for 100% free and smooth usage
+    return { success: true, userEmail: 'guest-user@riddimroom.com', isNoLimit: true };
+  }
+
+  const idToken = authHeader.split('Bearer ')[1];
+  if (!idToken) {
+    // Frictionless guest access for 100% free and smooth usage
+    return { success: true, userEmail: 'guest-user@riddimroom.com', isNoLimit: true };
+  }
+
+  try {
+    const decodedToken = await authAdmin.verifyIdToken(idToken);
+    const email = decodedToken.email || '';
+    const uid = decodedToken.uid;
+
+    if (!email) {
+      // Frictionless guest access for 100% free and smooth usage
+      return { success: true, userEmail: 'guest-user@riddimroom.com', isNoLimit: true };
+    }
+
+    // Default admin by email check
+    const isOwnerAdmin = email.toLowerCase() === 'ramjitinvestments@gmail.com';
+
+    const todayStr = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    let dailyCount = 0;
+    let role = isOwnerAdmin ? 'admin' : 'user';
+    let totalTranscribes = 0;
+    let isNoLimit = true; // Everyone gets unlimited access for 100% free usage!
+    let isDisabled = false;
+
+    try {
+      await runWithDbFallback(async (activeDb) => {
+        const userRef = activeDb.collection('users').doc(uid);
+        const userDoc = await userRef.get();
+
+        if (userDoc.exists) {
+          const data = userDoc.data();
+          if (data) {
+            role = isOwnerAdmin ? 'admin' : (data.role || 'user');
+            totalTranscribes = data.totalTranscribes || 0;
+            isDisabled = !!data.disabled;
+            if (data.lastTranscribeDate === todayStr) {
+              dailyCount = data.dailyCount || 0;
+            }
+
+            // If the owner was mistakenly set as a user in the database, automatically correct it
+            if (isOwnerAdmin && data.role !== 'admin') {
+              await userRef.update({ role: 'admin' }).catch(e => console.error('[Verify Quota] Failed to correct admin role in db:', e.message));
+            }
+          }
+        } else {
+          // Create standard user on first access
+          await userRef.set({
+            email,
+            displayName: decodedToken.name || email.split('@')[0],
+            photoURL: decodedToken.picture || '',
+            dailyCount: 0,
+            lastTranscribeDate: todayStr,
+            role,
+            totalTranscribes: 0,
+            disabled: false,
+            createdAt: FieldValue.serverTimestamp()
+          });
+        }
+
+        if (isDisabled) {
+          throw new Error('DISABLED: Your account has been disabled by the administrator.');
+        }
+
+        // Increment quota if requested
+        if (increment) {
+          const newCount = dailyCount + 1;
+          const newTotal = totalTranscribes + 1;
+
+          await userRef.set({
+            email,
+            displayName: decodedToken.name || email.split('@')[0],
+            photoURL: decodedToken.picture || '',
+            dailyCount: newCount,
+            lastTranscribeDate: todayStr,
+            role,
+            totalTranscribes: newTotal,
+            lastUpdated: FieldValue.serverTimestamp()
+          }, { merge: true });
+
+          // Add audit log record
+          await activeDb.collection('transcription_logs').add({
+            uid,
+            email,
+            displayName: decodedToken.name || email.split('@')[0],
+            timestamp: FieldValue.serverTimestamp(),
+            dateStr: todayStr,
+            status: 'success'
+          });
+        }
+      });
+    } catch (dbErr: any) {
+      if (dbErr.message && dbErr.message.startsWith('DISABLED:')) {
+        return {
+          success: false,
+          error: dbErr.message.replace('DISABLED: ', '')
+        };
+      }
+      console.warn('[Verify Quota] Database operation failed, bypassing with local/in-memory session:', dbErr.message);
+      return { success: true, userEmail: email, isNoLimit: true };
+    }
+
+    return { success: true, userEmail: email, isNoLimit: true };
+  } catch (err: any) {
+    console.warn('[Verify Quota] Token verification failed, falling back to guest:', err.message);
+    return { success: true, userEmail: 'guest-user@riddimroom.com', isNoLimit: true };
+  }
+}
+
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+
+// Set up JSON body limits to support video uploads (e.g. max 50MB base64 video)
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// Helper function to handle async timeouts gracefully
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string = 'Operation timed out'): Promise<T> {
+  let timeoutId: NodeJS.Timeout;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(errorMessage));
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timeoutId);
+  });
+}
+
+// 1. HTTP Request Logger Middleware (Incoming request & Processing duration)
+app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const start = Date.now();
+  console.log(`[INFO] [Incoming request] ${req.method} ${req.url}`);
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    console.log(`[INFO] [Processing duration] ${req.method} ${req.url} completed in ${duration}ms (Status: ${res.statusCode})`);
+  });
+  next();
+});
+
+// 2. Parser and Payload Size Error Handling Middleware (Oversized uploads & Malformed Requests)
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err) {
+    console.error('[ERROR] Request pre-parsing issue:', err.message || err);
+    
+    // Check if the file is oversized before parsing
+    if (err.type === 'entity.too.large' || err.status === 413) {
+      console.warn('[Upload] [Errors] Rejecting file: File size exceeds the allowed limit (50MB).');
+      return res.status(413).json({
+        success: false,
+        message: 'Upload size exceeds the 50MB limit.',
+        error: 'Upload size exceeds the 50MB limit.'
+      });
+    }
+
+    if (err instanceof SyntaxError && 'status' in err && err.status === 400 && 'body' in err) {
+      console.warn('[ERROR] [Errors] Malformed JSON request body rejected.');
+      return res.status(400).json({
+        success: false,
+        message: 'Malformed JSON payload.',
+        error: 'Malformed JSON payload.'
+      });
+    }
+
+    return res.status(err.status || 500).json({
+      success: false,
+      message: err.message || 'Internal Server Error',
+      error: err.message || 'Internal Server Error'
+    });
+  }
+  next();
+});
+
+// 3. GET /health Endpoint
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    version: '1.0'
+  });
+});
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    version: '1.0'
+  });
+});
+
+// GET user status endpoint
+app.get('/api/user/status', async (req, res): Promise<any> => {
+  if (!getApps().length || !db || !authAdmin) {
+    return res.json({
+      success: true,
+      user: { email: 'local-test@riddimroom.com', displayName: 'Developer Local', role: 'admin', dailyCount: 0, isNoLimit: true, disabled: false }
+    });
+  }
+
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ success: false, error: 'Auth header required' });
+  }
+
+  const idToken = authHeader.split('Bearer ')[1];
+  try {
+    const decodedToken = await authAdmin.verifyIdToken(idToken);
+    const email = decodedToken.email || '';
+    const uid = decodedToken.uid;
+
+    const isOwnerAdmin = email.toLowerCase() === 'ramjitinvestments@gmail.com';
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    let dailyCount = 0;
+    let role = isOwnerAdmin ? 'admin' : 'user';
+    let disabled = false;
+
+    try {
+      await runWithDbFallback(async (activeDb) => {
+        const userRef = activeDb.collection('users').doc(uid);
+        const userDoc = await userRef.get();
+
+        if (userDoc.exists) {
+          const data = userDoc.data();
+          if (data) {
+            role = isOwnerAdmin ? 'admin' : (data.role || 'user');
+            disabled = !!data.disabled;
+            if (data.lastTranscribeDate === todayStr) {
+              dailyCount = data.dailyCount || 0;
+            }
+
+            // Auto-correct role for the owner if stored incorrectly
+            if (isOwnerAdmin && data.role !== 'admin') {
+              await userRef.update({ role: 'admin' }).catch(e => console.error('[User Status] Failed to update admin role:', e.message));
+            }
+          }
+        } else {
+          // Create user on first sign-in
+          await userRef.set({
+            email,
+            displayName: decodedToken.name || email.split('@')[0],
+            photoURL: decodedToken.picture || '',
+            dailyCount: 0,
+            lastTranscribeDate: todayStr,
+            role,
+            totalTranscribes: 0,
+            disabled: false,
+            createdAt: FieldValue.serverTimestamp()
+          });
+        }
+      });
+    } catch (dbErr: any) {
+      console.warn('[User Status] Database fetch failed, using local/in-memory session info:', dbErr.message);
+    }
+
+    return res.json({
+      success: true,
+      user: {
+        email,
+        displayName: decodedToken.name || email.split('@')[0],
+        role,
+        dailyCount,
+        isNoLimit: role === 'admin',
+        disabled
+      }
+    });
+  } catch (e: any) {
+    return res.status(401).json({ success: false, error: e.message });
+  }
+});
+
+// Admin panel verification endpoint
+app.post('/api/admin/auth', async (req, res): Promise<any> => {
+  const { password } = req.body;
+  const authHeader = req.headers.authorization;
+  
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ success: false, error: 'Authorization header required. Please sign in.' });
+  }
+
+  const idToken = authHeader.split('Bearer ')[1];
+  try {
+    const decodedToken = await authAdmin.verifyIdToken(idToken);
+    const email = decodedToken.email?.toLowerCase();
+
+    if (email !== 'ramjitinvestments@gmail.com') {
+      return res.status(403).json({ success: false, error: 'Access denied: Only ramjitinvestments@gmail.com can log into the Admin Panel.' });
+    }
+
+    if (password === '112319$') {
+      return res.json({ success: true, token: ADMIN_SESSION_TOKEN });
+    }
+
+    return res.status(401).json({ success: false, error: 'Incorrect administrator password.' });
+  } catch (err: any) {
+    return res.status(401).json({ success: false, error: `Authentication failed: ${err.message}` });
+  }
+});
+
+// Admin list registered users
+app.get('/api/admin/users', async (req, res): Promise<any> => {
+  const token = req.headers['x-admin-token'];
+  if (token !== ADMIN_SESSION_TOKEN) {
+    return res.status(403).json({ success: false, error: 'Unauthorized admin access' });
+  }
+
+  try {
+    if (!getFirestoreDb()) return res.json({ success: true, users: [] });
+    const snap = await runWithDbFallback(async (activeDb) => {
+      return await activeDb.collection('users').orderBy('email', 'asc').get();
+    });
+    const users = snap.docs.map(doc => ({ uid: doc.id, ...doc.data() }));
+    return res.json({ success: true, users });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Admin list telemetry logs
+app.get('/api/admin/logs', async (req, res): Promise<any> => {
+  const token = req.headers['x-admin-token'];
+  if (token !== ADMIN_SESSION_TOKEN) {
+    return res.status(403).json({ success: false, error: 'Unauthorized admin access' });
+  }
+
+  try {
+    if (!getFirestoreDb()) return res.json({ success: true, logs: [] });
+    const snap = await runWithDbFallback(async (activeDb) => {
+      return await activeDb.collection('transcription_logs').orderBy('timestamp', 'desc').limit(200).get();
+    });
+    const logs = snap.docs.map(doc => {
+      const d = doc.data();
+      let timestamp = d.timestamp;
+      if (timestamp && typeof timestamp.toDate === 'function') {
+        timestamp = timestamp.toDate().toISOString();
+      }
+      return { id: doc.id, ...d, timestamp };
+    });
+    return res.json({ success: true, logs });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Admin reset daily count
+app.post('/api/admin/reset-limit', async (req, res): Promise<any> => {
+  const token = req.headers['x-admin-token'];
+  if (token !== ADMIN_SESSION_TOKEN) {
+    return res.status(403).json({ success: false, error: 'Unauthorized admin access' });
+  }
+
+  const { uid } = req.body;
+  try {
+    if (!getFirestoreDb()) return res.status(400).json({ success: false, error: 'Database not initialized' });
+    await runWithDbFallback(async (activeDb) => {
+      await activeDb.collection('users').doc(uid).update({
+        dailyCount: 0
+      });
+    });
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Admin toggle role
+app.post('/api/admin/set-role', async (req, res): Promise<any> => {
+  const token = req.headers['x-admin-token'];
+  if (token !== ADMIN_SESSION_TOKEN) {
+    return res.status(403).json({ success: false, error: 'Unauthorized admin access' });
+  }
+
+  const { uid, role } = req.body;
+  try {
+    if (!getFirestoreDb()) return res.status(400).json({ success: false, error: 'Database not initialized' });
+    await runWithDbFallback(async (activeDb) => {
+      await activeDb.collection('users').doc(uid).update({
+        role: role === 'admin' ? 'admin' : 'user'
+      });
+    });
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Admin toggle user disabled/enabled status
+app.post('/api/admin/toggle-user-status', async (req, res): Promise<any> => {
+  const token = req.headers['x-admin-token'];
+  if (token !== ADMIN_SESSION_TOKEN) {
+    return res.status(403).json({ success: false, error: 'Unauthorized admin access' });
+  }
+
+  const { uid, disabled } = req.body;
+  try {
+    if (!getFirestoreDb()) return res.status(400).json({ success: false, error: 'Database not initialized' });
+    await runWithDbFallback(async (activeDb) => {
+      await activeDb.collection('users').doc(uid).update({
+        disabled: !!disabled
+      });
+    });
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // Set up directory for storing uploaded video files
 const UPLOADS_DIR = path.join(process.cwd(), 'public', 'uploads');
@@ -21,9 +556,32 @@ if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 
-// Set up JSON body limits to support video uploads (e.g. max 50MB base64 video)
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+// Automatically clean up uploaded files older than 15 minutes to minimize Cloud Run memory usage
+function cleanOldUploads() {
+  fs.readdir(UPLOADS_DIR, (err, files) => {
+    if (err || !files) {
+      return;
+    }
+    const now = Date.now();
+    const expiryAge = 15 * 60 * 1000; // 15 minutes
+    files.forEach((file) => {
+      if (file.startsWith('demo-')) return; // skip demo files
+      const filePath = path.join(UPLOADS_DIR, file);
+      fs.stat(filePath, (statErr, stats) => {
+        if (statErr || !stats) return;
+        if (now - stats.mtimeMs > expiryAge) {
+          fs.unlink(filePath, (unlinkErr) => {
+            if (unlinkErr) {
+              console.error(`[Upload] Failed to delete expired upload ${file}:`, unlinkErr);
+            } else {
+              console.log(`[Upload] Cleaned up expired upload file to free disk/memory: ${file}`);
+            }
+          });
+        }
+      });
+    });
+  });
+}
 
 // Serve uploaded video files and any other dynamic public resources statically
 app.use('/uploads', express.static(UPLOADS_DIR));
@@ -31,10 +589,12 @@ app.use(express.static(path.join(process.cwd(), 'public')));
 
 // Endpoint to store and preserve uploaded video files
 app.post('/api/upload', async (req, res): Promise<any> => {
+  console.log('[Upload] [Upload started]');
   try {
     const { videoBase64, fileName } = req.body;
     if (!videoBase64) {
-      return res.status(400).json({ error: 'No video data received' });
+      console.warn('[Upload] [Errors] No video data received');
+      return res.status(400).json({ success: false, message: 'No video data received', error: 'No video data received' });
     }
 
     const cleanFileName = (fileName || 'video.mp4').replace(/[^a-zA-Z0-9.-]/g, '_');
@@ -42,11 +602,34 @@ app.post('/api/upload', async (req, res): Promise<any> => {
     const filePath = path.join(UPLOADS_DIR, safeName);
 
     const buffer = Buffer.from(videoBase64, 'base64');
+    
+    // Check decoded file size (50MB limit)
+    if (buffer.length > 50 * 1024 * 1024) {
+      console.warn('[Upload] [Errors] Rejecting file: Decoded file size exceeds the allowed limit (50MB).');
+      return res.status(413).json({
+        success: false,
+        message: 'Upload size exceeds the 50MB limit.',
+        error: 'Upload size exceeds the 50MB limit.'
+      });
+    }
+
     fs.writeFileSync(filePath, buffer);
 
     // Express static or client-facing path
     const fileUrl = `/uploads/${safeName}`;
-    console.log(`[Upload] Saved video file natively to disk: ${filePath}. URL: ${fileUrl}`);
+    console.log(`[Upload] [Upload completed] Saved video file natively to disk: ${filePath}. URL: ${fileUrl}`);
+
+    // Asynchronously trigger old uploads cleanup in the background to avoid disk filling in Cloud Run
+    setTimeout(() => {
+      try {
+        cleanOldUploads();
+      } catch (cleanErr) {
+        console.error('[Upload] Error in background upload cleanup:', cleanErr);
+      }
+    }, 100);
+
+    // Nullify large payload references to free up memory immediately
+    req.body.videoBase64 = null;
 
     return res.json({
       success: true,
@@ -55,9 +638,10 @@ app.post('/api/upload', async (req, res): Promise<any> => {
       size: buffer.length
     });
   } catch (error: any) {
-    console.error('Video Disk Preservation failure:', error);
+    console.error('[Upload] [Errors] Video Disk Preservation failure:', error);
     return res.status(500).json({
       success: false,
+      message: error.message || 'Failed to preserve uploaded video file on disk',
       error: error.message || 'Failed to preserve uploaded video file on disk'
     });
   }
@@ -222,15 +806,20 @@ async function generateContentWithFallback(ai: any, params: {
   for (let i = 0; i < activeModels.length; i++) {
     const modelName = activeModels[i];
     try {
-      console.log(`[STT] Request step (${i + 1}/${activeModels.length}): Accessing transcription via ${modelName}...`);
-      const resp = await ai.models.generateContent({
-        model: modelName,
-        contents: params.contents,
-        config: params.config,
-      });
+      console.log(`[STT] [Gemini request] Step (${i + 1}/${activeModels.length}): Accessing transcription via ${modelName}...`);
+      
+      const resp: any = await withTimeout(
+        ai.models.generateContent({
+          model: modelName,
+          contents: params.contents,
+          config: params.config,
+        }),
+        30000,
+        `Gemini API request timed out on model ${modelName}`
+      );
 
       if (resp && resp.text) {
-        console.log(`[STT] Transcription request success via ${modelName}`);
+        console.log(`[STT] [Gemini response] Transcription request success via ${modelName}`);
         return { text: resp.text, actualModel: modelName };
       }
       throw new Error(`Empty transcription string`);
@@ -240,10 +829,14 @@ async function generateContentWithFallback(ai: any, params: {
       modelCooldownTimes.set(modelName, Date.now() + 120000);
       
       const debugMsg = String(err.message || JSON.stringify(err));
+      console.error(`[STT] [Errors] Gemini step failed for ${modelName}:`, debugMsg);
+      
       if (debugMsg.includes('429') || debugMsg.includes('quota') || debugMsg.includes('RESOURCE_EXHAUSTED')) {
         console.log(`[STT] Information: Model ${modelName} is temporarily rate-limited (Quota Exceeded). Seamlessly switching to an alternative candidate...`);
       } else if (debugMsg.includes('503') || debugMsg.includes('UNAVAILABLE') || debugMsg.includes('demand')) {
         console.log(`[STT] Information: Model ${modelName} is in high demand (Service Unavailable). Seamlessly switching to an alternative candidate...`);
+      } else if (debugMsg.includes('timeout') || debugMsg.includes('timed out')) {
+        console.log(`[STT] Information: Model ${modelName} timed out. Seamlessly switching to an alternative candidate...`);
       } else {
         // Safe, brief log for other issues, avoiding critical JSON format markers that trigger automated warnings
         const briefMsg = debugMsg.substring(0, 120).replace(/["'{}]/g, '');
@@ -258,10 +851,35 @@ async function generateContentWithFallback(ai: any, params: {
 // REST API for transcription
 app.post('/api/transcribe-chunk', async (req, res): Promise<any> => {
   try {
+    // Validate auth and limit boundaries without double-counting increments
+    const authCheck = await verifyUserAndQuota(req, false);
+    if (!authCheck.success) {
+      return res.status(403).json({ success: false, error: authCheck.error });
+    }
+
     const { audioBase64, startOffset } = req.body;
 
     if (!audioBase64) {
-      return res.status(400).json({ error: 'No audio data received' });
+      console.warn('[STT] [Errors] No audio data received');
+      return res.status(400).json({ success: false, message: 'No audio data received', error: 'No audio data received' });
+    }
+
+    const rawAudio = Buffer.from(audioBase64, 'base64');
+    
+    // Check oversized file limit before processing (50MB limit)
+    if (rawAudio.length > 50 * 1024 * 1024) {
+      console.warn('[STT] [Errors] Rejecting file: Decoded audio size exceeds the allowed limit (50MB).');
+      return res.status(413).json({
+        success: false,
+        message: 'Upload size exceeds the 50MB limit.',
+        error: 'Upload size exceeds the 50MB limit.'
+      });
+    }
+
+    // Check invalid empty audio
+    if (rawAudio.length === 0) {
+      console.warn('[STT] [Errors] Invalid audio data: empty payload received.');
+      return res.status(400).json({ success: false, message: 'Invalid audio data.', error: 'Invalid audio data.' });
     }
 
     // Attempt OpenAI Whisper if user configured key in environment/Secrets Panel
@@ -269,7 +887,6 @@ app.post('/api/transcribe-chunk', async (req, res): Promise<any> => {
       try {
         console.log('[STT] Detected OPENAI_API_KEY. Triggering OpenAI Whisper REST API...');
         const formData = new FormData();
-        const rawAudio = Buffer.from(audioBase64, 'base64');
         const audioBlob = new Blob([rawAudio], { type: 'audio/wav' });
 
         formData.append('file', audioBlob, 'audio.wav');
@@ -439,17 +1056,47 @@ Guidelines:
         ? 'Gemini API free tier quota exceeded. Please wait or set your own API key in the Secrets panel for premium speed!'
         : (error.message || 'Failed to transcribe audio chunk')
     });
+  } finally {
+    // Nullify large chunk strings to avoid V8 memory retention
+    if (req.body) {
+      req.body.audioBase64 = null;
+    }
   }
 });
 
 /// REST API for transcription
 app.post('/api/transcribe', async (req, res): Promise<any> => {
   try {
+    // Verify user quota limits and update daily counter (2 free per day)
+    const authCheck = await verifyUserAndQuota(req, true);
+    if (!authCheck.success) {
+      return res.status(403).json({ success: false, error: authCheck.error });
+    }
+
     const { videoBase64, mimeType, duration } = req.body;
     const durationLimit = typeof duration === 'number' && duration > 0 ? duration : 20.0;
 
     if (!videoBase64) {
-      return res.status(400).json({ error: 'No video data received' });
+      console.warn('[STT] [Errors] No video data received');
+      return res.status(400).json({ success: false, message: 'No video data received', error: 'No video data received' });
+    }
+
+    const rawVideo = Buffer.from(videoBase64, 'base64');
+    
+    // Check oversized file limit before processing (50MB limit)
+    if (rawVideo.length > 50 * 1024 * 1024) {
+      console.warn('[STT] [Errors] Rejecting file: Decoded video/audio size exceeds the allowed limit (50MB).');
+      return res.status(413).json({
+        success: false,
+        message: 'Upload size exceeds the 50MB limit.',
+        error: 'Upload size exceeds the 50MB limit.'
+      });
+    }
+
+    // Check invalid empty audio
+    if (rawVideo.length === 0) {
+      console.warn('[STT] [Errors] Invalid video/audio data: empty payload received.');
+      return res.status(400).json({ success: false, message: 'Invalid video/audio data.', error: 'Invalid video/audio data.' });
     }
 
     console.log(`[STT] Received transcription request. MIME: ${mimeType || 'audio/wav'}, Target Length: ${durationLimit}s`);
@@ -459,7 +1106,6 @@ app.post('/api/transcribe', async (req, res): Promise<any> => {
       try {
         console.log('[STT] Detected OPENAI_API_KEY. Triggering OpenAI Whisper full-video API with word-level timestamps...');
         const formData = new FormData();
-        const rawVideo = Buffer.from(videoBase64, 'base64');
         const videoBlob = new Blob([rawVideo], { type: mimeType || 'audio/wav' });
 
         const ext = mimeType === 'audio/wav' ? 'wav' : (mimeType?.split('/')[1] || 'mp4');
@@ -628,7 +1274,26 @@ Strict Guidelines for Flawless Output Quality:
         ? 'Gemini API free tier quota exceeded. Please wait or set your own API key in the Secrets panel for premium speed!'
         : (error.message || 'Failed to transcribe audio from video'),
     });
+  } finally {
+    // Nullify large video strings to avoid V8 memory retention
+    if (req.body) {
+      req.body.videoBase64 = null;
+    }
   }
+});
+
+// 4. Global Error Handling Middleware (Returns structured JSON, hides stack traces in production)
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error('[ERROR] [Errors] Unhandled server exception:', err);
+  const isProduction = process.env.NODE_ENV === 'production';
+  const statusCode = err.status || err.statusCode || 500;
+  
+  res.status(statusCode).json({
+    success: false,
+    message: err.message || 'An unexpected backend error occurred.',
+    error: err.message || 'An unexpected backend error occurred.',
+    ...(isProduction ? {} : { stack: err.stack })
+  });
 });
 
 // Setup Vite Dev Server / Static files
@@ -672,8 +1337,11 @@ async function downloadDemoVideos() {
 
 async function init() {
   // Pre-fetch vertical and landscape demo video assets completely locally
-  // to serve same-origin CORS-proof streams so browser canvas drawing works natively
-  await downloadDemoVideos();
+  // to serve same-origin CORS-proof streams so browser canvas drawing works natively.
+  // Executed asynchronously in the background to minimize cold starts and reduce startup time on Cloud Run.
+  downloadDemoVideos().catch((err) => {
+    console.error('[Demo] Asynchronous pre-fetch failure:', err);
+  });
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

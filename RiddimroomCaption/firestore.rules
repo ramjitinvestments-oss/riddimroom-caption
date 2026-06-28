@@ -1,0 +1,43 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: Default-deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidUser(data) {
+      return data.email is string && data.email.size() <= 256
+          && data.displayName is string && data.displayName.size() <= 256
+          && (data.photoURL == null || (data.photoURL is string && data.photoURL.size() <= 1024))
+          && (data.role == 'user' || data.role == 'admin');
+    }
+
+    // Users Collection Rules
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) 
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'email', 'displayName', 'photoURL', 'dailyCount', 'lastTranscribeDate', 'totalTranscribes', 'lastUpdated'
+        ]);
+      allow delete: if false; // Deletion is disabled for standard users
+    }
+
+    // Transcription Logs Collection Rules - Strictly audit-only
+    match /transcription_logs/{logId} {
+      allow read: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false; // Logs are immutable
+    }
+  }
+}

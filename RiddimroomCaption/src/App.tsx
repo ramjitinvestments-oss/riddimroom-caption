@@ -29,6 +29,18 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { WordCaption, CaptionStyle, CaptionPosition, AnimationStyle, FontStyle } from './types';
 import { DEMO_VIDEOS, CAPTION_PRESETS, FONT_PAIRS, COMPONENT_IDS } from './data';
+import { RiddimLogo } from './components/RiddimLogo';
+import { auth, googleProvider } from './lib/firebase';
+import { 
+  signInWithPopup, 
+  signOut, 
+  onAuthStateChanged, 
+  User as FirebaseUser,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updateProfile
+} from 'firebase/auth';
+import { Shield, Lock, User as UserIcon, LogOut, Users, BarChart3, X } from 'lucide-react';
 
 const getBubbleBgColor = (hex: string, opacity: number) => {
   if (!hex || typeof hex !== 'string') return `rgba(0, 0, 0, ${opacity})`;
@@ -48,6 +60,31 @@ const getBubbleBgColor = (hex: string, opacity: number) => {
 };
 
 export default function App() {
+  // Firebase Auth and User States
+  const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
+  const [authIdToken, setAuthIdToken] = useState<string | null>(null);
+  const [userQuota, setUserQuota] = useState<{ dailyCount: number; maxFree: number; isNoLimit: boolean; role: string; disabled: boolean } | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
+
+  // Admin Panel States
+  const [isAdminOpen, setIsAdminOpen] = useState<boolean>(false);
+  const [adminInputPassword, setAdminInputPassword] = useState<string>('');
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(false);
+  const [adminSessionToken, setAdminSessionToken] = useState<string | null>(localStorage.getItem('admin_token'));
+  const [adminUsersList, setAdminUsersList] = useState<any[]>([]);
+  const [adminLogsList, setAdminLogsList] = useState<any[]>([]);
+  const [adminActiveTab, setAdminActiveTab] = useState<'users' | 'logs'>('users');
+  const [adminPanelError, setAdminPanelError] = useState<string | null>(null);
+
+  // Auth Modal States
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
+  const [authEmail, setAuthEmail] = useState<string>('');
+  const [authPassword, setAuthPassword] = useState<string>('');
+  const [authDisplayName, setAuthDisplayName] = useState<string>('');
+  const [isSignUpMode, setIsSignUpMode] = useState<boolean>(false);
+  const [authModalError, setAuthModalError] = useState<string | null>(null);
+  const [isSubmittingAuth, setIsSubmittingAuth] = useState<boolean>(false);
+
   // Video and Core States
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoName, setVideoName] = useState<string | null>(null);
@@ -284,6 +321,287 @@ export default function App() {
       videoRef.current.playbackRate = playbackSpeed;
     }
   }, [playbackSpeed]);
+
+  // Fetch User Quota Details Helper
+  const fetchUserQuota = async (token: string) => {
+    try {
+      const res = await fetch('/api/user/status', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.user) {
+          setUserQuota({
+            dailyCount: data.user.dailyCount || 0,
+            maxFree: 2,
+            isNoLimit: data.user.isNoLimit || false,
+            role: data.user.role || 'user',
+            disabled: data.user.disabled || false
+          });
+          if (data.user.role === 'admin' || data.user.email?.toLowerCase() === 'ramjitinvestments@gmail.com') {
+            setIsAdminAuthenticated(true);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[fetchUserQuota] Failed:', e);
+    }
+  };
+
+  // Track Firebase Authentication State
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user);
+      setIsAuthLoading(true);
+      if (user) {
+        try {
+          const token = await user.getIdToken(true);
+          setAuthIdToken(token);
+          await fetchUserQuota(token);
+        } catch (e) {
+          console.error('[Auth state change] Error updating token:', e);
+        }
+      } else {
+        setAuthIdToken(null);
+        setUserQuota(null);
+      }
+      setIsAuthLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Google, Email and Admin Authentication Handlers
+  const handleGoogleLogin = async () => {
+    try {
+      setTranscriptionError(null);
+      setAuthModalError(null);
+      const result = await signInWithPopup(auth, googleProvider);
+      if (result.user) {
+        const token = await result.user.getIdToken(true);
+        setAuthIdToken(token);
+        await fetchUserQuota(token);
+        setIsAuthModalOpen(false);
+      }
+    } catch (e: any) {
+      console.error('[Google login] Error signing in:', e);
+      setTranscriptionError(`Failed to sign in with Google: ${e.message}`);
+      setAuthModalError(`Google sign-in failed: ${e.message}`);
+    }
+  };
+
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthModalError(null);
+    setIsSubmittingAuth(true);
+
+    const trimmedEmail = authEmail.trim();
+    if (!trimmedEmail) {
+      setAuthModalError('Please enter a valid email address.');
+      setIsSubmittingAuth(false);
+      return;
+    }
+    if (!authPassword || authPassword.length < 6) {
+      setAuthModalError('Password must be at least 6 characters.');
+      setIsSubmittingAuth(false);
+      return;
+    }
+
+    try {
+      if (isSignUpMode) {
+        // Sign Up with Email and Password
+        const result = await createUserWithEmailAndPassword(auth, trimmedEmail, authPassword);
+        if (result.user) {
+          if (authDisplayName.trim()) {
+            await updateProfile(result.user, {
+              displayName: authDisplayName.trim()
+            });
+          }
+          const token = await result.user.getIdToken(true);
+          setAuthIdToken(token);
+          await fetchUserQuota(token);
+          setIsAuthModalOpen(false);
+          // Clear form
+          setAuthEmail('');
+          setAuthPassword('');
+          setAuthDisplayName('');
+        }
+      } else {
+        // Sign In with Email and Password
+        const result = await signInWithEmailAndPassword(auth, trimmedEmail, authPassword);
+        if (result.user) {
+          const token = await result.user.getIdToken(true);
+          setAuthIdToken(token);
+          await fetchUserQuota(token);
+          setIsAuthModalOpen(false);
+          // Clear form
+          setAuthEmail('');
+          setAuthPassword('');
+        }
+      }
+    } catch (err: any) {
+      console.error('[Email Auth Error]:', err);
+      let friendlyMessage = err.message;
+      if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found') {
+        friendlyMessage = 'Invalid email or password. Please try again.';
+      } else if (err.code === 'auth/email-already-in-use') {
+        friendlyMessage = 'This email is already in use. Try signing in instead.';
+      } else if (err.code === 'auth/weak-password') {
+        friendlyMessage = 'Password should be at least 6 characters.';
+      } else if (err.code === 'auth/invalid-email') {
+        friendlyMessage = 'Please enter a valid email address.';
+      }
+      setAuthModalError(friendlyMessage);
+    } finally {
+      setIsSubmittingAuth(false);
+    }
+  };
+
+  const handleGoogleLogout = async () => {
+    try {
+      await signOut(auth);
+      setCurrentUser(null);
+      setAuthIdToken(null);
+      setUserQuota(null);
+      setIsAdminAuthenticated(false);
+    } catch (e: any) {
+      console.error('[Google logout] Error signing out:', e);
+    }
+  };
+
+  // Admin Panel Action Handlers
+  const handleAdminAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAdminPanelError(null);
+    if (!currentUser) {
+      setAdminPanelError('Please sign in with Ramjitinvestments@gmail.com in the top-right before accessing the Admin Panel.');
+      return;
+    }
+    if (currentUser.email?.toLowerCase() !== 'ramjitinvestments@gmail.com') {
+      setAdminPanelError(`Access denied. ONLY Ramjitinvestments@gmail.com can unlock the admin panel. Currently logged in as ${currentUser.email || 'unknown'}.`);
+      return;
+    }
+    try {
+      const res = await fetch('/api/admin/auth', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': authIdToken ? `Bearer ${authIdToken}` : ''
+        },
+        body: JSON.stringify({ password: adminInputPassword })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setAdminSessionToken(data.token);
+        localStorage.setItem('admin_token', data.token);
+        setIsAdminAuthenticated(true);
+        // Load data immediately
+        fetchAdminData(data.token);
+      } else {
+        setAdminPanelError(data.error || 'Incorrect Admin Password');
+      }
+    } catch (err: any) {
+      setAdminPanelError(`Auth Error: ${err.message}`);
+    }
+  };
+
+  const fetchAdminData = async (token: string | null = adminSessionToken) => {
+    const activeToken = token || adminSessionToken;
+    if (!activeToken) return;
+    setAdminPanelError(null);
+    try {
+      // Fetch users list
+      const resUsers = await fetch('/api/admin/users', {
+        headers: { 'x-admin-token': activeToken }
+      });
+      if (resUsers.ok) {
+        const d = await resUsers.json();
+        if (d.success) setAdminUsersList(d.users || []);
+      }
+
+      // Fetch logs list
+      const resLogs = await fetch('/api/admin/logs', {
+        headers: { 'x-admin-token': activeToken }
+      });
+      if (resLogs.ok) {
+        const d = await resLogs.json();
+        if (d.success) setAdminLogsList(d.logs || []);
+      }
+    } catch (err: any) {
+      setAdminPanelError(`Data Fetch Error: ${err.message}`);
+    }
+  };
+
+  const handleAdminResetLimit = async (uid: string) => {
+    const activeToken = adminSessionToken;
+    if (!activeToken) return;
+    try {
+      const res = await fetch('/api/admin/reset-limit', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-admin-token': activeToken
+        },
+        body: JSON.stringify({ uid })
+      });
+      if (res.ok) {
+        await fetchAdminData(activeToken);
+        if (currentUser) {
+          const t = await currentUser.getIdToken(true);
+          await fetchUserQuota(t);
+        }
+      }
+    } catch (e) {
+      console.error('Reset limit failed:', e);
+    }
+  };
+
+  const handleAdminSetRole = async (uid: string, newRole: string) => {
+    const activeToken = adminSessionToken;
+    if (!activeToken) return;
+    try {
+      const res = await fetch('/api/admin/set-role', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-admin-token': activeToken
+        },
+        body: JSON.stringify({ uid, role: newRole })
+      });
+      if (res.ok) {
+        await fetchAdminData(activeToken);
+      }
+    } catch (e) {
+      console.error('Set role failed:', e);
+    }
+  };
+
+  const handleAdminToggleStatus = async (uid: string, disabled: boolean) => {
+    const activeToken = adminSessionToken;
+    if (!activeToken) return;
+    try {
+      const res = await fetch('/api/admin/toggle-user-status', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-admin-token': activeToken
+        },
+        body: JSON.stringify({ uid, disabled })
+      });
+      if (res.ok) {
+        await fetchAdminData(activeToken);
+      }
+    } catch (e) {
+      console.error('Toggle user status failed:', e);
+    }
+  };
+
+  // Load admin data when panel is open and authenticated
+  useEffect(() => {
+    const activeToken = adminSessionToken;
+    if (isAdminOpen && isAdminAuthenticated && activeToken) {
+      fetchAdminData(activeToken);
+    }
+  }, [isAdminOpen, isAdminAuthenticated, adminSessionToken]);
 
   // Watermark States
   const [watermarkUrl, setWatermarkUrl] = useState<string | null>(null);
@@ -881,7 +1199,10 @@ export default function App() {
       // Call single-shot high accuracy full video transcriber endpoint with metadata duration
       const response = await fetch('/api/transcribe', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': authIdToken ? `Bearer ${authIdToken}` : ''
+        },
         body: JSON.stringify({ videoBase64: base64Data, mimeType: 'audio/wav', duration }),
       });
 
@@ -914,6 +1235,10 @@ export default function App() {
         const finalSequence = rebuildCaptionSequence(aligned);
         console.log(`[Caption Generation] Successfully aligned and built sequence containing ${finalSequence.length} finalized non-overlapping subtitles.`);
         setCaptions(finalSequence);
+
+        if (authIdToken) {
+          fetchUserQuota(authIdToken);
+        }
       } else {
         throw new Error('No spoken dialog or words detected in the audio track of video.');
       }
@@ -1726,35 +2051,132 @@ export default function App() {
     }, 150);
   };
 
+  if (currentUser && userQuota?.disabled) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-[#0A0A0A] text-white p-6 font-sans">
+        <div className="w-full max-w-md bg-[#0F0F13] border border-red-500/20 rounded-2xl p-8 text-center space-y-6 shadow-2xl shadow-red-500/5">
+          <div className="w-16 h-16 bg-red-500/10 border border-red-500/30 text-red-400 rounded-full flex items-center justify-center mx-auto animate-pulse">
+            <Lock className="w-8 h-8" />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-xl font-extrabold text-white tracking-tight">Access Denied</h2>
+            <p className="text-sm text-white/60 leading-relaxed">
+              Your account (<strong className="text-white">{currentUser.email}</strong>) has been disabled/blocked by the administrator of RiddimRoom.
+            </p>
+            <p className="text-xs text-white/40 pt-2">
+              Please contact the administrator at <a href="mailto:ramjitinvestments@gmail.com" className="text-indigo-400 hover:underline font-bold">ramjitinvestments@gmail.com</a> for assistance.
+            </p>
+          </div>
+          <div className="pt-2">
+            <button
+              onClick={handleGoogleLogout}
+              className="w-full py-2.5 bg-white/5 hover:bg-white/10 text-white font-bold text-xs rounded-xl transition-all cursor-pointer border border-white/10"
+            >
+              Sign Out / Switch Account
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-screen max-h-screen bg-[#0A0A0A] text-white overflow-hidden font-sans">
       {/* Visual Header */}
       <header className="border-b border-white/5 bg-[#0C0C0C] px-5 py-3 flex items-center justify-between z-10 shrink-0">
         <div className="flex items-center gap-2.5">
-          <img src="/riddimroom_logo.jpg" alt="RiddimroomCaption Brand" className="w-6 h-6 rounded-full border border-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.3)] object-cover" />
+          <img src="/riddimroom_logo.jpg" alt="RiddimroomCaption Brand" className="w-7 h-7 rounded-full border border-emerald-500/50 shadow-[0_0_10px_rgba(16,185,129,0.3)] object-cover shrink-0" />
           <div>
-            <h1 className="text-sm font-black bg-gradient-to-r from-orange-400 via-yellow-200 to-emerald-400 bg-clip-text text-transparent tracking-tight">
+            <h1 className="text-sm font-black bg-gradient-to-r from-[#10B981] via-[#FBBF24] to-[#EF4444] bg-clip-text text-transparent tracking-tight">
               RiddimroomCaption
             </h1>
             <p className="text-[10px] text-white/40">Vibrant animated subtitles creator</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          {/* Admin Panel Access Button */}
+          <button
+            onClick={() => {
+              setIsAdminOpen(true);
+              setAdminPanelError(null);
+            }}
+            className="py-1.5 px-3 rounded-lg text-xs font-semibold transition-all border border-indigo-500/20 bg-indigo-500/5 hover:bg-indigo-500/15 text-indigo-300 flex items-center gap-1 active:scale-[0.98]"
+            title="Open Admin Settings Panel"
+          >
+            <Shield className="w-3.5 h-3.5 text-indigo-400" />
+            <span className="hidden sm:inline">Admin Panel</span>
+          </button>
+
+          {/* Quota Indicator */}
+          {currentUser && userQuota && (
+            <div className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/5 text-[11px] font-medium text-white/75 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+              {userQuota.isNoLimit ? (
+                <span className="text-emerald-400 font-bold">Admin Quota</span>
+              ) : (
+                <span>Quota: <strong className="text-white">{Math.max(0, userQuota.maxFree - userQuota.dailyCount)}/{userQuota.maxFree}</strong> left</span>
+              )}
+            </div>
+          )}
+
           <button
             onClick={() => fileInputRef.current?.click()}
             className="py-1.5 px-3 rounded-lg text-xs font-bold transition-all border border-white/5 bg-white/5 hover:bg-white/10 text-white flex items-center gap-1.5 active:scale-[0.98]"
           >
             <Upload className="w-3.5 h-3.5 text-indigo-400" />
-            <span>Upload Video</span>
+            <span className="hidden sm:inline">Upload Video</span>
           </button>
           
           {videoUrl && (
             <button
               onClick={handleReset}
-              className="py-1.5 px-3 rounded-lg text-xs font-semibold transition-all border border-white/5 hover:bg-white/5 text-white/50 hover:text-white"
+              className="py-1.5 px-3 rounded-lg text-xs font-semibold transition-all border border-white/5 hover:bg-[#ff4444]/10 hover:border-[#ff4444]/20 hover:text-[#ff4444]"
             >
               Reset
+            </button>
+          )}
+
+          {/* Google Auth Status / Actions */}
+          {isAuthLoading ? (
+            <div className="w-5 h-5 rounded-full border-2 border-white/10 animate-spin border-t-transparent"></div>
+          ) : currentUser ? (
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 bg-white/2 border border-white/5 rounded-xl pl-2 pr-1.5 py-1">
+                {currentUser.photoURL ? (
+                  <img
+                    src={currentUser.photoURL}
+                    alt={currentUser.displayName || 'User'}
+                    referrerPolicy="no-referrer"
+                    className="w-5.5 h-5.5 rounded-full border border-white/10"
+                  />
+                ) : (
+                  <div className="w-5.5 h-5.5 rounded-full bg-indigo-600 flex items-center justify-center text-[10px] font-bold">
+                    {currentUser.displayName?.[0] || currentUser.email?.[0] || '?'}
+                  </div>
+                )}
+                <div className="text-left hidden md:block max-w-[100px]">
+                  <p className="text-[10px] font-semibold text-white truncate">{currentUser.displayName || 'User'}</p>
+                </div>
+                <button
+                  onClick={handleGoogleLogout}
+                  className="p-1 hover:bg-white/5 rounded-lg text-white/40 hover:text-white transition-all ml-1"
+                  title="Sign Out"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => {
+                setAuthModalError(null);
+                setIsAuthModalOpen(true);
+              }}
+              className="py-1.5 px-3 rounded-lg text-xs font-bold transition-all bg-indigo-600 hover:bg-indigo-500 text-white flex items-center gap-1.5 active:scale-[0.98] shadow-md shadow-indigo-600/10 shrink-0 cursor-pointer"
+            >
+              <UserIcon className="w-3.5 h-3.5" />
+              <span>Sign In</span>
             </button>
           )}
         </div>
@@ -2356,8 +2778,12 @@ export default function App() {
                     <div className="bg-amber-950/10 border border-amber-500/10 text-amber-300 text-[11px] rounded-lg p-3 flex gap-2">
                       <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                       <div className="space-y-0.5">
-                        <span className="font-bold">Dummy offline captions loaded</span>
-                        <p className="text-white/60">Quota limits exceeded. Predefined timed subtitles are ready to style & download.</p>
+                        <span className="font-bold">
+                          {transcriptionError.toLowerCase().includes('quota') || transcriptionError.toLowerCase().includes('429') 
+                            ? 'Quota Limit Fallback' 
+                            : 'Transcription System Alert'}
+                        </span>
+                        <p className="text-white/80 mt-0.5">{transcriptionError}</p>
                       </div>
                     </div>
                   )}
@@ -2923,7 +3349,7 @@ export default function App() {
             </div>
           </div>
         ) : (
-          <div className="max-w-md w-full mx-auto my-12 bg-[#0F0F13] border border-white/5 rounded-2xl p-8 text-center space-y-6 shadow-2xl">
+          <div className="max-w-lg w-full mx-auto my-12 bg-[#0F0F13] border border-white/5 rounded-2xl p-8 text-center space-y-6 shadow-2xl">
             {/* Riddimroom Caption Logo display on opening */}
             <div className="relative group flex justify-center py-2">
               <img 
@@ -2935,12 +3361,40 @@ export default function App() {
             </div>
             
             <div className="space-y-1">
-              <h2 className="text-2xl font-black bg-gradient-to-r from-orange-400 via-yellow-200 to-emerald-400 bg-clip-text text-transparent tracking-tight">
-                RiddimroomCaption
+              <h2 className="text-3xl font-black bg-gradient-to-r from-[#10B981] via-[#FBBF24] to-[#EF4444] bg-clip-text text-transparent tracking-tighter uppercase italic">
+                Riddimroom Caption
               </h2>
               <p className="text-[11px] text-white/50 leading-relaxed max-w-sm mx-auto">
                 Generate, edit, and burn high-conversion animated subtitles instantly onto your promo clips and creator shorts.
               </p>
+            </div>
+
+            {/* Slogan details and Vibes block */}
+            <div className="bg-black/40 border border-white/5 rounded-xl p-4.5 space-y-2.5 text-left text-xs">
+              <div className="flex items-center gap-2.5">
+                <div className="bg-emerald-500/20 text-emerald-400 p-0.5 rounded-full shrink-0">
+                  <Check className="w-3.5 h-3.5" />
+                </div>
+                <span className="font-extrabold text-emerald-400 tracking-wide uppercase text-[10px]">THE VIBES IS UNSTOPPABLE!</span>
+              </div>
+              <div className="flex items-center gap-2.5">
+                <div className="bg-emerald-500/20 text-emerald-400 p-0.5 rounded-full shrink-0">
+                  <Check className="w-3.5 h-3.5" />
+                </div>
+                <span className="text-white/80 font-bold text-[10px]">LEVEL UP YOUR CONTENT IN SECONDS.</span>
+              </div>
+              <div className="flex items-center gap-2.5">
+                <div className="bg-emerald-500/20 text-emerald-400 p-0.5 rounded-full shrink-0">
+                  <Check className="w-3.5 h-3.5" />
+                </div>
+                <span className="text-white/80 font-bold text-[10px]">MAKE IT LOUD, MAKE IT <span className="text-rose-500 font-black uppercase italic">VIRAL!</span></span>
+              </div>
+              <div className="flex items-center gap-2.5">
+                <div className="bg-emerald-500/20 text-emerald-400 p-0.5 rounded-full shrink-0">
+                  <Check className="w-3.5 h-3.5" />
+                </div>
+                <span className="text-white/80 font-bold text-[10px]">RIDDIMROOM CAPTION DOES IT ALL.</span>
+              </div>
             </div>
 
             {/* Quick-start preset demo tools selection */}
@@ -2990,9 +3444,457 @@ export default function App() {
                 <span className="text-[8px] text-white/30 block mt-0.5">MP4, MOV, or WebM format (Maximum 20s)</span>
               </div>
             </div>
+
+            {/* Core Badges Row */}
+            <div className="grid grid-cols-5 gap-2 border-t border-white/5 pt-5 text-center">
+              <div className="bg-white/2 border border-white/5 p-2 rounded-lg flex flex-col items-center justify-center gap-1">
+                <div className="text-[8px] font-black px-1 py-0.5 border border-emerald-500/30 text-emerald-400 rounded bg-emerald-500/10 leading-none">CC</div>
+                <span className="text-[7px] font-extrabold text-white/40 uppercase tracking-tight leading-none mt-1">Automatic Captions</span>
+              </div>
+              <div className="bg-white/2 border border-white/5 p-2 rounded-lg flex flex-col items-center justify-center gap-1">
+                <div className="text-[8px] font-black px-1 py-0.5 border border-amber-500/30 text-amber-400 rounded bg-amber-500/10 leading-none">💧</div>
+                <span className="text-[7px] font-extrabold text-white/40 uppercase tracking-tight leading-none mt-1">Add Watermark</span>
+              </div>
+              <div className="bg-white/2 border border-white/5 p-2 rounded-lg flex flex-col items-center justify-center gap-1">
+                <div className="text-[8px] font-black px-1 py-0.5 border border-rose-500/30 text-rose-400 rounded bg-rose-500/10 leading-none">FX</div>
+                <span className="text-[7px] font-extrabold text-white/40 uppercase tracking-tight leading-none mt-1">Amazing Effects</span>
+              </div>
+              <div className="bg-white/2 border border-white/5 p-2 rounded-lg flex flex-col items-center justify-center gap-1">
+                <Type className="w-3.5 h-3.5 text-yellow-400 shrink-0" />
+                <span className="text-[7px] font-extrabold text-white/40 uppercase tracking-tight leading-none mt-1">Custom Style</span>
+              </div>
+              <div className="bg-white/2 border border-white/5 p-2 rounded-lg flex flex-col items-center justify-center gap-1">
+                <svg className="w-3.5 h-3.5 text-amber-400 shrink-0" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                <span className="text-[7px] font-extrabold text-white/40 uppercase tracking-tight leading-none mt-1">Fast & Powerful</span>
+              </div>
+            </div>
+
+            {/* Bottom URL Link Ribbon */}
+            <div className="border-t border-white/5 pt-4">
+              <div className="bg-gradient-to-r from-[#10B981] via-[#FBBF24] to-[#EF4444] p-[1px] rounded-lg shadow-lg overflow-hidden">
+                <div className="bg-[#09090C] py-2 px-3 text-center flex flex-col sm:flex-row items-center justify-center gap-2">
+                  <span className="text-[10px] text-white/70 font-semibold">
+                    Perfectly designed for use after our event camera.
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <span className="text-white/40 text-[11px]">🌐</span>
+                    <span className="text-xs font-black tracking-widest text-white font-mono bg-gradient-to-r from-emerald-400 via-amber-200 to-rose-400 bg-clip-text text-transparent">
+                      eventcam.riddimroom.com
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
           </div>
         )}
       </main>
+
+      {/* Admin Panel Modal Overlay */}
+      <AnimatePresence>
+        {isAdminOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md overflow-y-auto"
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 15 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 15 }}
+              className="w-full max-w-4xl bg-[#0F0F13] border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden max-h-[90vh]"
+            >
+              {/* Header */}
+              <div className="border-b border-white/5 bg-[#14141A] px-6 py-4 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Shield className="w-5 h-5 text-indigo-400" />
+                  <div>
+                    <h3 className="text-sm font-bold text-white">RiddimroomCaption Administrator Panel</h3>
+                    <p className="text-[10px] text-white/40">Manage user quotas, roles, and review usage telemetry</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsAdminOpen(false)}
+                  className="p-1.5 hover:bg-white/5 rounded-lg text-white/40 hover:text-white transition-all cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="p-6 overflow-y-auto flex-1 space-y-4">
+                {adminPanelError && (
+                  <div className="p-3 bg-red-500/10 border border-red-500/20 text-red-400 text-xs rounded-xl flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4" />
+                    <span>{adminPanelError}</span>
+                  </div>
+                )}
+
+                {!isAdminAuthenticated ? (
+                  /* Password Verification Form */
+                  <form onSubmit={handleAdminAuth} className="max-w-md mx-auto py-8 space-y-4 text-center">
+                    <div className="w-12 h-12 bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 rounded-full flex items-center justify-center mx-auto mb-2">
+                      <Lock className="w-6 h-6" />
+                    </div>
+                    <div className="space-y-1">
+                      <h4 className="text-sm font-bold text-white">Authorized Access Only</h4>
+                      <p className="text-xs text-white/40">Please input the administrator secret key passcode to unlock this panel.</p>
+                    </div>
+                    <div className="space-y-2">
+                      <input
+                        type="password"
+                        placeholder="Enter admin password..."
+                        value={adminInputPassword}
+                        onChange={(e) => setAdminInputPassword(e.target.value)}
+                        className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 rounded-xl text-xs text-white placeholder-white/30 focus:outline-none focus:border-indigo-500 transition-all text-center"
+                        autoFocus
+                      />
+                      <button
+                        type="submit"
+                        className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl transition-all cursor-pointer"
+                      >
+                        Unlock Panel
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  /* Admin Dashboard Interface */
+                  <div className="space-y-4">
+                    {/* Tabs / Actions Bar */}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-white/5 pb-3">
+                      <div className="flex gap-2 bg-[#1A1A24] p-1 rounded-xl">
+                        <button
+                          onClick={() => setAdminActiveTab('users')}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                            adminActiveTab === 'users' ? 'bg-indigo-600 text-white' : 'text-white/40 hover:text-white'
+                          }`}
+                        >
+                          <Users className="w-3.5 h-3.5" />
+                          <span>Registered Users ({adminUsersList.length})</span>
+                        </button>
+                        <button
+                          onClick={() => setAdminActiveTab('logs')}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                            adminActiveTab === 'logs' ? 'bg-indigo-600 text-white' : 'text-white/40 hover:text-white'
+                          }`}
+                        >
+                          <BarChart3 className="w-3.5 h-3.5" />
+                          <span>Transcription Telemetry ({adminLogsList.length})</span>
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => fetchAdminData()}
+                          className="p-2 bg-white/5 hover:bg-white/10 text-white/80 hover:text-white rounded-xl text-xs flex items-center gap-1.5 border border-white/5 transition-all cursor-pointer"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" />
+                          <span>Refresh</span>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setAdminSessionToken(null);
+                            localStorage.removeItem('admin_token');
+                            setIsAdminAuthenticated(false);
+                          }}
+                          className="px-3 py-2 bg-red-600/10 hover:bg-red-600 text-red-400 hover:text-white rounded-xl text-xs font-semibold transition-all border border-red-500/10 cursor-pointer"
+                        >
+                          Lock Session
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Tab Panels */}
+                    {adminActiveTab === 'users' ? (
+                      <div className="border border-white/5 rounded-xl overflow-hidden bg-[#14141A]">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse">
+                            <thead>
+                              <tr className="bg-white/2 border-b border-white/5 text-[10px] uppercase tracking-wider text-white/40">
+                                <th className="px-4 py-3 font-bold">User Information</th>
+                                <th className="px-4 py-3 font-bold">System Role</th>
+                                <th className="px-4 py-3 font-bold">Daily Count</th>
+                                <th className="px-4 py-3 font-bold">Lifetime Total</th>
+                                <th className="px-4 py-3 font-bold text-right">Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-white/5 text-xs text-white/80">
+                              {adminUsersList.length === 0 ? (
+                                <tr>
+                                  <td colSpan={5} className="px-4 py-8 text-center text-white/30">
+                                    No registered users found in Firestore.
+                                  </td>
+                                </tr>
+                              ) : (
+                                adminUsersList.map((usr: any) => (
+                                  <tr key={usr.uid} className="hover:bg-white/2 transition-all">
+                                    <td className="px-4 py-3">
+                                      <div className="flex items-center gap-2">
+                                        {usr.photoURL ? (
+                                          <img src={usr.photoURL} className="w-7 h-7 rounded-full border border-white/10" referrerPolicy="no-referrer" />
+                                        ) : (
+                                          <div className="w-7 h-7 rounded-full bg-indigo-600 flex items-center justify-center text-[10px] font-bold">
+                                            {usr.email?.[0]?.toUpperCase()}
+                                          </div>
+                                        )}
+                                        <div>
+                                          <p className="font-bold text-white leading-tight">{usr.displayName || 'No Name'}</p>
+                                          <p className="text-[10px] text-white/40">{usr.email}</p>
+                                        </div>
+                                      </div>
+                                    </td>
+                                    <td className="px-4 py-3">
+                                      <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                                        usr.role === 'admin' ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20' : 'bg-white/5 text-white/60'
+                                      }`}>
+                                        {usr.role === 'admin' ? 'ADMINISTRATOR' : 'STANDARD USER'}
+                                      </span>
+                                    </td>
+                                    <td className="px-4 py-3">
+                                      <span className={`font-mono font-bold ${usr.dailyCount >= 2 ? 'text-red-400' : 'text-white'}`}>
+                                        {usr.dailyCount || 0} / 2
+                                      </span>
+                                    </td>
+                                    <td className="px-4 py-3 font-mono">
+                                      {usr.totalTranscribes || 0} transcribes
+                                    </td>
+                                    <td className="px-4 py-3 text-right">
+                                      <div className="flex items-center justify-end gap-1.5">
+                                        <button
+                                          onClick={() => handleAdminToggleStatus(usr.uid, !usr.disabled)}
+                                          className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer border ${
+                                            usr.disabled 
+                                              ? 'bg-red-500/15 hover:bg-red-500/30 border-red-500/25 text-red-400' 
+                                              : 'bg-emerald-500/15 hover:bg-emerald-500/30 border-emerald-500/25 text-emerald-400'
+                                          }`}
+                                          title={usr.disabled ? "Click to allow app use" : "Click to block app use"}
+                                        >
+                                          {usr.disabled ? 'App: Blocked' : 'App: Active'}
+                                        </button>
+                                        <button
+                                          onClick={() => handleAdminResetLimit(usr.uid)}
+                                          className="px-2.5 py-1 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white rounded-lg text-[10px] font-bold transition-all cursor-pointer"
+                                          title="Reset daily usage limit to 0"
+                                        >
+                                          Reset Limit
+                                        </button>
+                                        <button
+                                          onClick={() => handleAdminSetRole(usr.uid, usr.role === 'admin' ? 'user' : 'admin')}
+                                          className="px-2.5 py-1 bg-white/5 hover:bg-white/10 text-white rounded-lg text-[10px] font-bold transition-all border border-white/5 cursor-pointer"
+                                        >
+                                          {usr.role === 'admin' ? 'Revoke Admin' : 'Make Admin'}
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="border border-white/5 rounded-xl overflow-hidden bg-[#14141A]">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse">
+                            <thead>
+                              <tr className="bg-white/2 border-b border-white/5 text-[10px] uppercase tracking-wider text-white/40">
+                                <th className="px-4 py-3 font-bold">Timestamp</th>
+                                <th className="px-4 py-3 font-bold">User Account</th>
+                                <th className="px-4 py-3 font-bold">Details</th>
+                                <th className="px-4 py-3 font-bold text-right">Status</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-white/5 text-xs text-white/80 font-mono">
+                              {adminLogsList.length === 0 ? (
+                                <tr>
+                                  <td colSpan={4} className="px-4 py-8 text-center font-sans text-white/30">
+                                    No transcription telemetry logs captured.
+                                  </td>
+                                </tr>
+                              ) : (
+                                adminLogsList.map((log: any, idx: number) => {
+                                  let timeStr = 'Invalid Date';
+                                  if (log.timestamp) {
+                                    const date = log.timestamp.seconds ? new Date(log.timestamp.seconds * 1000) : new Date(log.timestamp);
+                                    timeStr = date.toLocaleString();
+                                  }
+                                  return (
+                                    <tr key={log.id || idx} className="hover:bg-white/2 transition-all">
+                                      <td className="px-4 py-3 text-white/60 text-[11px]">{timeStr}</td>
+                                      <td className="px-4 py-3">
+                                        <div className="font-sans font-bold text-white">{log.displayName || 'No Name'}</div>
+                                        <div className="text-[10px] text-white/40">{log.email}</div>
+                                      </td>
+                                      <td className="px-4 py-3 text-[11px] font-sans">
+                                        Ran automatic full speech-to-text sequence
+                                      </td>
+                                      <td className="px-4 py-3 text-right">
+                                        <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 text-[10px] font-bold font-sans">
+                                          SUCCESS
+                                        </span>
+                                      </td>
+                                    </tr>
+                                  );
+                                })
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Smooth Premium User Auth Modal */}
+      <AnimatePresence>
+        {isAuthModalOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md"
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 15 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 15 }}
+              className="w-full max-w-md bg-[#0F0F13] border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+            >
+              {/* Header */}
+              <div className="border-b border-white/5 bg-[#14141A] px-6 py-4 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <UserIcon className="w-5 h-5 text-indigo-400" />
+                  <div>
+                    <h3 className="text-sm font-bold text-white">
+                      {isSignUpMode ? 'Create Your Account' : 'Welcome Back'}
+                    </h3>
+                    <p className="text-[10px] text-white/40">
+                      {isSignUpMode ? 'Sign up to transcribe and sync captions' : 'Sign in to access your free captions'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsAuthModalOpen(false)}
+                  className="p-1.5 hover:bg-white/5 rounded-lg text-white/40 hover:text-white transition-all cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Form Body */}
+              <div className="p-6 space-y-4">
+                {authModalError && (
+                  <div className="p-3 bg-red-500/10 border border-red-500/20 text-red-400 text-xs rounded-xl flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{authModalError}</span>
+                  </div>
+                )}
+
+                {/* Google Sign In (Primary & Smooth) */}
+                <button
+                  type="button"
+                  onClick={handleGoogleLogin}
+                  className="w-full py-2.5 px-4 bg-[#1A1A24] hover:bg-[#232331] border border-white/10 hover:border-white/20 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]"
+                >
+                  {/* Styled minimalist Google icon */}
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" width="16" height="16">
+                    <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v3.92h6.61a5.66 5.66 0 0 1-2.45 3.71v3.08h3.95a12 12 0 0 0 3.63-8.64z"/>
+                    <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.95-3.08c-1.1.74-2.5 1.18-3.98 1.18-3.07 0-5.67-2.08-6.6-4.88H1.35v3.18A12 12 0 0 0 12 24z"/>
+                    <path fill="#FBBC05" d="M5.4 14.31A7.16 7.16 0 0 1 5 12c0-.8.14-1.58.4-2.31V6.51H1.35A11.94 11.94 0 0 0 0 12c0 2.05.52 4 1.35 5.49l4.05-3.18z"/>
+                    <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.43-3.43A11.93 11.93 0 0 0 12 0 12 12 0 0 0 1.35 6.51l4.05 3.18c.93-2.8 3.53-4.88 6.6-4.88z"/>
+                  </svg>
+                  <span>Continue with Google</span>
+                </button>
+
+                {/* Divider */}
+                <div className="flex items-center gap-3 my-3">
+                  <div className="h-px bg-white/5 flex-1" />
+                  <span className="text-[10px] text-white/30 uppercase font-semibold tracking-wider">or email</span>
+                  <div className="h-px bg-white/5 flex-1" />
+                </div>
+
+                {/* Email / Password Form */}
+                <form onSubmit={handleEmailAuth} className="space-y-3.5">
+                  {isSignUpMode && (
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-white/55 block">DISPLAY NAME</label>
+                      <input
+                        type="text"
+                        placeholder="Your full name"
+                        value={authDisplayName}
+                        onChange={(e) => setAuthDisplayName(e.target.value)}
+                        className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 rounded-xl text-xs text-white placeholder-white/20 focus:outline-none focus:border-indigo-500 transition-all"
+                      />
+                    </div>
+                  )}
+
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-white/55 block">EMAIL ADDRESS</label>
+                    <input
+                      type="email"
+                      required
+                      placeholder="name@example.com"
+                      value={authEmail}
+                      onChange={(e) => setAuthEmail(e.target.value)}
+                      className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 rounded-xl text-xs text-white placeholder-white/20 focus:outline-none focus:border-indigo-500 transition-all"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-white/55 block">PASSWORD</label>
+                    <input
+                      type="password"
+                      required
+                      placeholder="••••••••"
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                      className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 rounded-xl text-xs text-white placeholder-white/20 focus:outline-none focus:border-indigo-500 transition-all"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isSubmittingAuth}
+                    className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed mt-2"
+                  >
+                    {isSubmittingAuth ? (
+                      <div className="w-4 h-4 rounded-full border-2 border-white/20 border-t-white animate-spin"></div>
+                    ) : (
+                      <span>{isSignUpMode ? 'Create Free Account' : 'Sign In'}</span>
+                    )}
+                  </button>
+                </form>
+
+                {/* Mode Toggle Footer */}
+                <div className="text-center pt-2">
+                  <p className="text-xs text-white/40 font-sans">
+                    {isSignUpMode ? 'Already have an account?' : 'New to RiddimRoom Captions?'}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsSignUpMode(!isSignUpMode);
+                        setAuthModalError(null);
+                      }}
+                      className="text-indigo-400 hover:text-indigo-300 ml-1.5 font-bold focus:outline-none cursor-pointer"
+                    >
+                      {isSignUpMode ? 'Sign In' : 'Create Account'}
+                    </button>
+                  </p>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Upload trigger logic element */}
       <input
