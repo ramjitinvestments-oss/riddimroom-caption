@@ -149,11 +149,7 @@ export default function App() {
   }, [adminSettings]);
 
   // Auth States
-  const [authFormMode, setAuthFormMode] = useState<'google_only' | 'login' | 'signup' | 'forgot_password'>('google_only');
   const [rememberMe, setRememberMe] = useState<boolean>(true);
-  const [authEmail, setAuthEmail] = useState<string>('');
-  const [authPassword, setAuthPassword] = useState<string>('');
-  const [authDisplayName, setAuthDisplayName] = useState<string>('');
   const [authModalError, setAuthModalError] = useState<string | null>(null);
   const [isSubmittingAuth, setIsSubmittingAuth] = useState<boolean>(false);
 
@@ -479,98 +475,6 @@ export default function App() {
       console.error('[Google login] Error signing in:', e);
       setTranscriptionError(`Failed to sign in with Google: ${e.message}`);
       setAuthModalError(`Google sign-in failed: ${e.message}`);
-    }
-  };
-
-  const handleEmailAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthModalError(null);
-    setIsSubmittingAuth(true);
-
-    const trimmedEmail = authEmail.trim();
-    if (!trimmedEmail) {
-      setAuthModalError('Please enter a valid email address.');
-      setIsSubmittingAuth(false);
-      return;
-    }
-    if (!authPassword || authPassword.length < 6) {
-      setAuthModalError('Password must be at least 6 characters.');
-      setIsSubmittingAuth(false);
-      return;
-    }
-
-    try {
-      const persistenceType = rememberMe ? browserLocalPersistence : browserSessionPersistence;
-      await setPersistence(auth, persistenceType);
-
-      if (authFormMode === 'signup') {
-        // Sign Up with Email and Password
-        const result = await createUserWithEmailAndPassword(auth, trimmedEmail, authPassword);
-        if (result.user) {
-          if (authDisplayName.trim()) {
-            await updateProfile(result.user, {
-              displayName: authDisplayName.trim()
-            });
-          }
-          const token = await result.user.getIdToken(true);
-          setAuthIdToken(token);
-          await fetchUserQuota(token);
-          // Clear form
-          setAuthEmail('');
-          setAuthPassword('');
-          setAuthDisplayName('');
-        }
-      } else {
-        // Sign In with Email and Password
-        const result = await signInWithEmailAndPassword(auth, trimmedEmail, authPassword);
-        if (result.user) {
-          const token = await result.user.getIdToken(true);
-          setAuthIdToken(token);
-          await fetchUserQuota(token);
-          // Clear form
-          setAuthEmail('');
-          setAuthPassword('');
-        }
-      }
-    } catch (err: any) {
-      console.error('[Email Auth Error]:', err);
-      let friendlyMessage = err.message;
-      if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found') {
-        friendlyMessage = 'Invalid email or password. Please try again.';
-      } else if (err.code === 'auth/email-already-in-use') {
-        friendlyMessage = 'This email is already in use. Try signing in instead.';
-      } else if (err.code === 'auth/weak-password') {
-        friendlyMessage = 'Password should be at least 6 characters.';
-      } else if (err.code === 'auth/invalid-email') {
-        friendlyMessage = 'Please enter a valid email address.';
-      }
-      setAuthModalError(friendlyMessage);
-    } finally {
-      setIsSubmittingAuth(false);
-    }
-  };
-
-  const handleForgotPassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthModalError(null);
-    setIsSubmittingAuth(true);
-
-    const trimmedEmail = authEmail.trim();
-    if (!trimmedEmail) {
-      setAuthModalError('Please enter your email to request a reset link.');
-      setIsSubmittingAuth(false);
-      return;
-    }
-
-    try {
-      await sendPasswordResetEmail(auth, trimmedEmail);
-      alert(`Password reset link sent to ${trimmedEmail}. Please check your inbox.`);
-      setAuthFormMode('login');
-    } catch (err: any) {
-      console.error('[Password Reset Error]:', err);
-      setAuthModalError(err.message || 'Failed to send password reset email.');
-    } finally {
-      setIsSubmittingAuth(false);
     }
   };
 
@@ -2575,29 +2479,37 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col h-screen max-h-screen bg-[#0A0A0A] text-white overflow-hidden font-sans">
-      {/* Visual Header */}
-      <header className="border-b border-white/5 bg-[#0C0C0C] px-5 py-3 flex items-center justify-between z-10 shrink-0">
-        <div className="flex items-center gap-2.5">
-          <img src="/riddimroom_logo.jpg" alt="RiddimroomCaption Brand" className="w-7 h-7 rounded-full border border-emerald-500/50 shadow-[0_0_10px_rgba(16,185,129,0.3)] object-cover shrink-0" />
-          <div>
-            <h1 className="text-sm font-black bg-gradient-to-r from-[#10B981] via-[#FBBF24] to-[#EF4444] bg-clip-text text-transparent tracking-tight">
-              RiddimroomCaption
-            </h1>
-            <p className="text-[10px] text-white/40">Vibrant animated subtitles creator</p>
+    <ProtectedRoute
+      currentUser={currentUser}
+      isAuthLoading={isAuthLoading}
+      userQuota={userQuota}
+      redirectTo={navigateTo}
+    >
+      <div className="flex flex-col h-screen max-h-screen bg-[#0A0A0A] text-white overflow-hidden font-sans">
+        {/* Visual Header */}
+        <header className="border-b border-white/5 bg-[#0C0C0C] px-5 py-3 flex items-center justify-between z-10 shrink-0">
+          <div className="flex items-center gap-2.5">
+            <img src="/riddimroom_logo.jpg" alt="RiddimroomCaption Brand" className="w-7 h-7 rounded-full border border-emerald-500/50 shadow-[0_0_10px_rgba(16,185,129,0.3)] object-cover shrink-0" />
+            <div>
+              <h1 className="text-sm font-black bg-gradient-to-r from-[#10B981] via-[#FBBF24] to-[#EF4444] bg-clip-text text-transparent tracking-tight">
+                RiddimroomCaption
+              </h1>
+              <p className="text-[10px] text-white/40">Vibrant animated subtitles creator</p>
+            </div>
           </div>
-        </div>
 
-        <div className="flex items-center gap-3">
-          {/* Admin Panel Access Button */}
-          <button
-            onClick={() => navigateTo('/admin')}
-            className="py-1.5 px-3 rounded-lg text-xs font-semibold transition-all border border-indigo-500/20 bg-indigo-500/5 hover:bg-indigo-500/15 text-indigo-300 flex items-center gap-1 active:scale-[0.98]"
-            title="Open Admin Settings Panel"
-          >
-            <Shield className="w-3.5 h-3.5 text-indigo-400" />
-            <span className="hidden sm:inline">Admin Panel</span>
-          </button>
+          <div className="flex items-center gap-3">
+            {/* Admin Panel Access Button */}
+            {currentUser?.email?.toLowerCase() === 'ramjitinvestments@gmail.com' && (
+              <button
+                onClick={() => navigateTo('/admin')}
+                className="py-1.5 px-3 rounded-lg text-xs font-semibold transition-all border border-indigo-500/20 bg-indigo-500/5 hover:bg-indigo-500/15 text-indigo-300 flex items-center gap-1 active:scale-[0.98]"
+                title="Open Admin Settings Panel"
+              >
+                <Shield className="w-3.5 h-3.5 text-indigo-400" />
+                <span className="hidden sm:inline">Admin Panel</span>
+              </button>
+            )}
 
           {/* Quota Indicator */}
           {currentUser && userQuota && (
@@ -4907,5 +4819,6 @@ export default function App() {
         }}
       />
     </div>
+    </ProtectedRoute>
   );
 }
