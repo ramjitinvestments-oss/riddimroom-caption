@@ -30,6 +30,9 @@ import { motion, AnimatePresence } from 'motion/react';
 import { WordCaption, CaptionStyle, CaptionPosition, AnimationStyle, FontStyle } from './types';
 import { DEMO_VIDEOS, CAPTION_PRESETS, FONT_PAIRS, COMPONENT_IDS } from './data';
 import { RiddimLogo } from './components/RiddimLogo';
+import { ProtectedRoute } from './components/ProtectedRoute';
+import { LoginPage } from './components/LoginPage';
+import { AdminPanel } from './components/AdminPanel';
 import { auth, googleProvider } from './lib/firebase';
 import { 
   signInWithPopup, 
@@ -38,9 +41,13 @@ import {
   User as FirebaseUser,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
-  updateProfile
+  updateProfile,
+  sendPasswordResetEmail,
+  setPersistence,
+  browserLocalPersistence,
+  browserSessionPersistence
 } from 'firebase/auth';
-import { Shield, Lock, User as UserIcon, LogOut, Users, BarChart3, X } from 'lucide-react';
+import { Shield, Lock, User as UserIcon, LogOut, Users, BarChart3, X, Search, Activity, Settings, Globe, Sliders, Bell, History, PlusCircle, Edit2 } from 'lucide-react';
 
 const getBubbleBgColor = (hex: string, opacity: number) => {
   if (!hex || typeof hex !== 'string') return `rgba(0, 0, 0, ${opacity})`;
@@ -73,17 +80,101 @@ export default function App() {
   const [adminSessionToken, setAdminSessionToken] = useState<string | null>(localStorage.getItem('admin_token'));
   const [adminUsersList, setAdminUsersList] = useState<any[]>([]);
   const [adminLogsList, setAdminLogsList] = useState<any[]>([]);
-  const [adminActiveTab, setAdminActiveTab] = useState<'users' | 'logs'>('users');
+  const [adminActiveTab, setAdminActiveTab] = useState<'dashboard' | 'users' | 'cms' | 'settings' | 'security' | 'notifications' | 'audit'>('dashboard');
   const [adminPanelError, setAdminPanelError] = useState<string | null>(null);
+  const [adminUsersSearch, setAdminUsersSearch] = useState<string>('');
+  const [adminSettings, setAdminSettings] = useState<any>(null);
+  const [adminAuditLogs, setAdminAuditLogs] = useState<any[]>([]);
+  const [adminNotifications, setAdminNotifications] = useState<any[]>([]);
+  const [adminPanelTheme, setAdminPanelTheme] = useState<'dark' | 'light'>('dark');
+  const [adminSelectedUser, setAdminSelectedUser] = useState<any>(null);
 
-  // Auth Modal States
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
+  // Admin Edit Form States
+  const [editMaxFileSize, setEditMaxFileSize] = useState<number>(100);
+  const [editDefaultLimit, setEditDefaultLimit] = useState<number>(2);
+  const [editRegistrationOpen, setEditRegistrationOpen] = useState<boolean>(true);
+  const [editMaintenanceMode, setEditMaintenanceMode] = useState<boolean>(false);
+  const [editSystemMessage, setEditSystemMessage] = useState<string>('');
+
+  const [editCmsHeadline, setEditCmsHeadline] = useState<string>('');
+  const [editCmsSubheadline, setEditCmsSubheadline] = useState<string>('');
+  const [editCmsThemeColor, setEditCmsThemeColor] = useState<string>('#10B981');
+  const [editCmsPresetStyles, setEditCmsPresetStyles] = useState<string>('');
+
+  const [editSecAdminPass, setEditSecAdminPass] = useState<string>('');
+  const [editSecMaxAttempts, setEditSecMaxAttempts] = useState<number>(5);
+  const [editSecSessionTimeout, setEditSecSessionTimeout] = useState<number>(30);
+  const [editSecMultiFactor, setEditSecMultiFactor] = useState<boolean>(false);
+
+  // New User Creation Form States
+  const [newUserEmail, setNewUserEmail] = useState<string>('');
+  const [newUserPassword, setNewUserPassword] = useState<string>('');
+  const [newUserDisplayName, setNewUserDisplayName] = useState<string>('');
+  const [newUserRole, setNewUserRole] = useState<'user' | 'admin'>('user');
+
+  // Change Password Form State
+  const [changePassUserUid, setChangePassUserUid] = useState<string | null>(null);
+  const [changePassNewPassword, setChangePassNewPassword] = useState<string>('');
+
+  // Announcement Form States
+  const [notifTitle, setNotifTitle] = useState<string>('');
+  const [notifMessage, setNotifMessage] = useState<string>('');
+  const [notifType, setNotifType] = useState<'info' | 'success' | 'warning' | 'danger'>('info');
+  const [notifRecipientType, setNotifRecipientType] = useState<'all' | 'users' | 'admins' | 'selected'>('all');
+  const [notifSelectedUsers, setNotifSelectedUsers] = useState<string[]>([]);
+
+  // Pre-populate effect
+  useEffect(() => {
+    if (adminSettings) {
+      if (adminSettings.settings) {
+        setEditMaxFileSize(adminSettings.settings.maxFileSizeMb || 100);
+        setEditDefaultLimit(adminSettings.settings.defaultDailyQuota || 2);
+        setEditRegistrationOpen(adminSettings.settings.registrationOpen ?? true);
+        setEditMaintenanceMode(adminSettings.settings.maintenanceMode ?? false);
+        setEditSystemMessage(adminSettings.settings.systemMessage || '');
+      }
+      if (adminSettings.cms) {
+        setEditCmsHeadline(adminSettings.cms.headline || '');
+        setEditCmsSubheadline(adminSettings.cms.subheadline || '');
+        setEditCmsThemeColor(adminSettings.cms.themeColor || '#10B981');
+        setEditCmsPresetStyles(adminSettings.cms.presetStyles || '');
+      }
+      if (adminSettings.security) {
+        setEditSecAdminPass(adminSettings.security.adminPasscode || '');
+        setEditSecMaxAttempts(adminSettings.security.maxLoginAttempts || 5);
+        setEditSecSessionTimeout(adminSettings.security.sessionTimeoutMinutes || 30);
+        setEditSecMultiFactor(adminSettings.security.multiFactorEnforced ?? false);
+      }
+    }
+  }, [adminSettings]);
+
+  // Auth States
+  const [authFormMode, setAuthFormMode] = useState<'google_only' | 'login' | 'signup' | 'forgot_password'>('google_only');
+  const [rememberMe, setRememberMe] = useState<boolean>(true);
   const [authEmail, setAuthEmail] = useState<string>('');
   const [authPassword, setAuthPassword] = useState<string>('');
   const [authDisplayName, setAuthDisplayName] = useState<string>('');
-  const [isSignUpMode, setIsSignUpMode] = useState<boolean>(false);
   const [authModalError, setAuthModalError] = useState<string | null>(null);
   const [isSubmittingAuth, setIsSubmittingAuth] = useState<boolean>(false);
+
+  // Client-Side Routing States
+  const [currentPath, setCurrentPath] = useState<string>(() => {
+    const p = window.location.pathname;
+    return p === '/' ? '/dashboard' : p;
+  });
+
+  const navigateTo = useCallback((path: string) => {
+    window.history.pushState(null, '', path);
+    setCurrentPath(path);
+  }, []);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setCurrentPath(window.location.pathname === '/' ? '/dashboard' : window.location.pathname);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   // Video and Core States
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -336,7 +427,8 @@ export default function App() {
             maxFree: 2,
             isNoLimit: data.user.isNoLimit || false,
             role: data.user.role || 'user',
-            disabled: data.user.disabled || false
+            disabled: data.user.disabled || false,
+            enabled: data.user.enabled !== false
           });
           if (data.user.role === 'admin' || data.user.email?.toLowerCase() === 'ramjitinvestments@gmail.com') {
             setIsAdminAuthenticated(true);
@@ -351,8 +443,8 @@ export default function App() {
   // Track Firebase Authentication State
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setCurrentUser(user);
       setIsAuthLoading(true);
+      setCurrentUser(user);
       if (user) {
         try {
           const token = await user.getIdToken(true);
@@ -375,12 +467,13 @@ export default function App() {
     try {
       setTranscriptionError(null);
       setAuthModalError(null);
+      const persistenceType = rememberMe ? browserLocalPersistence : browserSessionPersistence;
+      await setPersistence(auth, persistenceType);
       const result = await signInWithPopup(auth, googleProvider);
       if (result.user) {
         const token = await result.user.getIdToken(true);
         setAuthIdToken(token);
         await fetchUserQuota(token);
-        setIsAuthModalOpen(false);
       }
     } catch (e: any) {
       console.error('[Google login] Error signing in:', e);
@@ -407,7 +500,10 @@ export default function App() {
     }
 
     try {
-      if (isSignUpMode) {
+      const persistenceType = rememberMe ? browserLocalPersistence : browserSessionPersistence;
+      await setPersistence(auth, persistenceType);
+
+      if (authFormMode === 'signup') {
         // Sign Up with Email and Password
         const result = await createUserWithEmailAndPassword(auth, trimmedEmail, authPassword);
         if (result.user) {
@@ -419,7 +515,6 @@ export default function App() {
           const token = await result.user.getIdToken(true);
           setAuthIdToken(token);
           await fetchUserQuota(token);
-          setIsAuthModalOpen(false);
           // Clear form
           setAuthEmail('');
           setAuthPassword('');
@@ -432,7 +527,6 @@ export default function App() {
           const token = await result.user.getIdToken(true);
           setAuthIdToken(token);
           await fetchUserQuota(token);
-          setIsAuthModalOpen(false);
           // Clear form
           setAuthEmail('');
           setAuthPassword('');
@@ -456,6 +550,30 @@ export default function App() {
     }
   };
 
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthModalError(null);
+    setIsSubmittingAuth(true);
+
+    const trimmedEmail = authEmail.trim();
+    if (!trimmedEmail) {
+      setAuthModalError('Please enter your email to request a reset link.');
+      setIsSubmittingAuth(false);
+      return;
+    }
+
+    try {
+      await sendPasswordResetEmail(auth, trimmedEmail);
+      alert(`Password reset link sent to ${trimmedEmail}. Please check your inbox.`);
+      setAuthFormMode('login');
+    } catch (err: any) {
+      console.error('[Password Reset Error]:', err);
+      setAuthModalError(err.message || 'Failed to send password reset email.');
+    } finally {
+      setIsSubmittingAuth(false);
+    }
+  };
+
   const handleGoogleLogout = async () => {
     try {
       await signOut(auth);
@@ -463,8 +581,75 @@ export default function App() {
       setAuthIdToken(null);
       setUserQuota(null);
       setIsAdminAuthenticated(false);
+      navigateTo('/login');
     } catch (e: any) {
       console.error('[Google logout] Error signing out:', e);
+    }
+  };
+
+  const handleEmailAuthDirect = async (
+    mode: 'login' | 'signup',
+    email: string,
+    password: string,
+    displayName?: string
+  ) => {
+    setIsSubmittingAuth(true);
+    setAuthModalError(null);
+    try {
+      const persistenceType = rememberMe ? browserLocalPersistence : browserSessionPersistence;
+      await setPersistence(auth, persistenceType);
+
+      if (mode === 'signup') {
+        const result = await createUserWithEmailAndPassword(auth, email.trim(), password);
+        if (result.user) {
+          if (displayName?.trim()) {
+            await updateProfile(result.user, {
+              displayName: displayName.trim()
+            });
+          }
+          const token = await result.user.getIdToken(true);
+          setAuthIdToken(token);
+          await fetchUserQuota(token);
+        }
+      } else {
+        const result = await signInWithEmailAndPassword(auth, email.trim(), password);
+        if (result.user) {
+          const token = await result.user.getIdToken(true);
+          setAuthIdToken(token);
+          await fetchUserQuota(token);
+        }
+      }
+      navigateTo('/dashboard');
+    } catch (err: any) {
+      console.error('[Email Auth Direct Error]:', err);
+      let friendlyMessage = err.message;
+      if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found') {
+        friendlyMessage = 'Invalid email or password. Please try again.';
+      } else if (err.code === 'auth/email-already-in-use') {
+        friendlyMessage = 'This email is already in use. Try signing in instead.';
+      } else if (err.code === 'auth/weak-password') {
+        friendlyMessage = 'Password should be at least 6 characters.';
+      } else if (err.code === 'auth/invalid-email') {
+        friendlyMessage = 'Please enter a valid email address.';
+      }
+      setAuthModalError(friendlyMessage);
+      throw new Error(friendlyMessage);
+    } finally {
+      setIsSubmittingAuth(false);
+    }
+  };
+
+  const handleForgotPasswordDirect = async (email: string) => {
+    setIsSubmittingAuth(true);
+    setAuthModalError(null);
+    try {
+      await sendPasswordResetEmail(auth, email.trim());
+    } catch (err: any) {
+      console.error('[Password Reset Direct Error]:', err);
+      setAuthModalError(err.message || 'Failed to send password reset email.');
+      throw err;
+    } finally {
+      setIsSubmittingAuth(false);
     }
   };
 
@@ -473,11 +658,7 @@ export default function App() {
     e.preventDefault();
     setAdminPanelError(null);
     if (!currentUser) {
-      setAdminPanelError('Please sign in with Ramjitinvestments@gmail.com in the top-right before accessing the Admin Panel.');
-      return;
-    }
-    if (currentUser.email?.toLowerCase() !== 'ramjitinvestments@gmail.com') {
-      setAdminPanelError(`Access denied. ONLY Ramjitinvestments@gmail.com can unlock the admin panel. Currently logged in as ${currentUser.email || 'unknown'}.`);
+      setAdminPanelError('Please sign in before accessing the Admin Panel.');
       return;
     }
     try {
@@ -491,11 +672,8 @@ export default function App() {
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        setAdminSessionToken(data.token);
-        localStorage.setItem('admin_token', data.token);
         setIsAdminAuthenticated(true);
-        // Load data immediately
-        fetchAdminData(data.token);
+        fetchAdminData();
       } else {
         setAdminPanelError(data.error || 'Incorrect Admin Password');
       }
@@ -504,27 +682,49 @@ export default function App() {
     }
   };
 
-  const fetchAdminData = async (token: string | null = adminSessionToken) => {
-    const activeToken = token || adminSessionToken;
-    if (!activeToken) return;
+  const fetchAdminData = async () => {
+    if (!authIdToken) return;
     setAdminPanelError(null);
     try {
+      const headers = {
+        'Authorization': `Bearer ${authIdToken}`
+      };
+
+      // Fetch settings, cms, security
+      const resSettings = await fetch('/api/admin/settings', { headers });
+      if (resSettings.ok) {
+        const d = await resSettings.json();
+        if (d.success) {
+          setAdminSettings(d);
+        }
+      }
+
       // Fetch users list
-      const resUsers = await fetch('/api/admin/users', {
-        headers: { 'x-admin-token': activeToken }
-      });
+      const resUsers = await fetch('/api/admin/users', { headers });
       if (resUsers.ok) {
         const d = await resUsers.json();
         if (d.success) setAdminUsersList(d.users || []);
       }
 
       // Fetch logs list
-      const resLogs = await fetch('/api/admin/logs', {
-        headers: { 'x-admin-token': activeToken }
-      });
+      const resLogs = await fetch('/api/admin/logs', { headers });
       if (resLogs.ok) {
         const d = await resLogs.json();
         if (d.success) setAdminLogsList(d.logs || []);
+      }
+
+      // Fetch audit logs
+      const resAudit = await fetch('/api/admin/audit-logs', { headers });
+      if (resAudit.ok) {
+        const d = await resAudit.json();
+        if (d.success) setAdminAuditLogs(d.auditLogs || []);
+      }
+
+      // Fetch notifications
+      const resNotifs = await fetch('/api/admin/notifications', { headers });
+      if (resNotifs.ok) {
+        const d = await resNotifs.json();
+        if (d.success) setAdminNotifications(d.notifications || []);
       }
     } catch (err: any) {
       setAdminPanelError(`Data Fetch Error: ${err.message}`);
@@ -532,19 +732,18 @@ export default function App() {
   };
 
   const handleAdminResetLimit = async (uid: string) => {
-    const activeToken = adminSessionToken;
-    if (!activeToken) return;
+    if (!authIdToken) return;
     try {
       const res = await fetch('/api/admin/reset-limit', {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
-          'x-admin-token': activeToken
+          'Authorization': `Bearer ${authIdToken}`
         },
         body: JSON.stringify({ uid })
       });
       if (res.ok) {
-        await fetchAdminData(activeToken);
+        await fetchAdminData();
         if (currentUser) {
           const t = await currentUser.getIdToken(true);
           await fetchUserQuota(t);
@@ -556,19 +755,18 @@ export default function App() {
   };
 
   const handleAdminSetRole = async (uid: string, newRole: string) => {
-    const activeToken = adminSessionToken;
-    if (!activeToken) return;
+    if (!authIdToken) return;
     try {
       const res = await fetch('/api/admin/set-role', {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
-          'x-admin-token': activeToken
+          'Authorization': `Bearer ${authIdToken}`
         },
         body: JSON.stringify({ uid, role: newRole })
       });
       if (res.ok) {
-        await fetchAdminData(activeToken);
+        await fetchAdminData();
       }
     } catch (e) {
       console.error('Set role failed:', e);
@@ -576,32 +774,246 @@ export default function App() {
   };
 
   const handleAdminToggleStatus = async (uid: string, disabled: boolean) => {
-    const activeToken = adminSessionToken;
-    if (!activeToken) return;
+    if (!authIdToken) return;
     try {
       const res = await fetch('/api/admin/toggle-user-status', {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
-          'x-admin-token': activeToken
+          'Authorization': `Bearer ${authIdToken}`
         },
         body: JSON.stringify({ uid, disabled })
       });
       if (res.ok) {
-        await fetchAdminData(activeToken);
+        await fetchAdminData();
       }
     } catch (e) {
       console.error('Toggle user status failed:', e);
     }
   };
 
+  const handleAdminDeleteUser = async (uid: string) => {
+    if (!authIdToken) return;
+    if (!window.confirm("Are you sure you want to permanently delete this user? This cannot be undone.")) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/admin/delete-user', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authIdToken}`
+        },
+        body: JSON.stringify({ uid })
+      });
+      if (res.ok) {
+        await fetchAdminData();
+      }
+    } catch (e) {
+      console.error('Delete user failed:', e);
+    }
+  };
+
+  const handleAdminSaveSettings = async (settingsToSave: any) => {
+    if (!authIdToken) return;
+    try {
+      const res = await fetch('/api/admin/settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authIdToken}`
+        },
+        body: JSON.stringify(settingsToSave)
+      });
+      if (res.ok) {
+        const d = await res.json();
+        if (d.success) {
+          setAdminSettings((prev: any) => ({ ...prev, settings: d.settings }));
+          alert('System settings updated successfully!');
+        }
+      }
+    } catch (e) {
+      console.error('Save settings failed:', e);
+    }
+  };
+
+  const handleAdminSaveCMS = async (cmsToSave: any) => {
+    if (!authIdToken) return;
+    try {
+      const res = await fetch('/api/admin/cms', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authIdToken}`
+        },
+        body: JSON.stringify(cmsToSave)
+      });
+      if (res.ok) {
+        const d = await res.json();
+        if (d.success) {
+          setAdminSettings((prev: any) => ({ ...prev, cms: d.cms }));
+          alert('CMS Content updated successfully!');
+        }
+      }
+    } catch (e) {
+      console.error('Save CMS failed:', e);
+    }
+  };
+
+  const handleAdminSaveSecurity = async (securityToSave: any) => {
+    if (!authIdToken) return;
+    try {
+      const res = await fetch('/api/admin/security', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authIdToken}`
+        },
+        body: JSON.stringify(securityToSave)
+      });
+      if (res.ok) {
+        const d = await res.json();
+        if (d.success) {
+          setAdminSettings((prev: any) => ({ ...prev, security: d.security }));
+          alert('Security settings updated successfully!');
+        }
+      }
+    } catch (e) {
+      console.error('Save security failed:', e);
+    }
+  };
+
+  const handleAdminCreateUser = async (userObj: any) => {
+    if (!authIdToken) return;
+    try {
+      const res = await fetch('/api/admin/create-user', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authIdToken}`
+        },
+        body: JSON.stringify(userObj)
+      });
+      const d = await res.json();
+      if (res.ok && d.success) {
+        await fetchAdminData();
+        alert('User account created manually successfully!');
+      } else {
+        alert('Failed to create user: ' + (d.error || 'Unknown error'));
+      }
+    } catch (e: any) {
+      console.error('Create user failed:', e);
+      alert('Error creating user: ' + e.message);
+    }
+  };
+
+  const handleAdminChangePassword = async (uid: string, pass: string) => {
+    if (!authIdToken || !pass) return;
+    try {
+      const res = await fetch('/api/admin/change-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authIdToken}`
+        },
+        body: JSON.stringify({ uid, password: pass })
+      });
+      if (res.ok) {
+        alert('User password changed successfully!');
+      } else {
+        alert('Failed to update password.');
+      }
+    } catch (e) {
+      console.error('Password update failed:', e);
+    }
+  };
+
+  const handleAdminForceLogout = async (uid: string) => {
+    if (!authIdToken) return;
+    try {
+      const res = await fetch('/api/admin/force-logout', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authIdToken}`
+        },
+        body: JSON.stringify({ uid })
+      });
+      if (res.ok) {
+        alert('Active user session revoked successfully!');
+      }
+    } catch (e) {
+      console.error('Revoke session failed:', e);
+    }
+  };
+
+  const handleAdminForceLogoutAll = async () => {
+    if (!authIdToken) return;
+    if (!window.confirm("Are you sure you want to force logout ALL platform users? This will revoke active sessions.")) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/admin/force-logout-all', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authIdToken}`
+        }
+      });
+      if (res.ok) {
+        alert('Forced logout initiated for all active users successfully!');
+      }
+    } catch (e) {
+      console.error('Revoke all sessions failed:', e);
+    }
+  };
+
+  const handleAdminUpdateUserFeatures = async (uid: string, features: any) => {
+    if (!authIdToken) return;
+    try {
+      const res = await fetch('/api/admin/update-user-features', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authIdToken}`
+        },
+        body: JSON.stringify({ uid, features })
+      });
+      if (res.ok) {
+        await fetchAdminData();
+      }
+    } catch (e) {
+      console.error('Update user features failed:', e);
+    }
+  };
+
+  const handleAdminSendNotification = async (notifObj: any) => {
+    if (!authIdToken) return;
+    try {
+      const res = await fetch('/api/admin/send-notification', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authIdToken}`
+        },
+        body: JSON.stringify(notifObj)
+      });
+      const d = await res.json();
+      if (res.ok && d.success) {
+        await fetchAdminData();
+        alert('Notification announcement dispatched successfully!');
+      }
+    } catch (e) {
+      console.error('Dispatch notice failed:', e);
+    }
+  };
+
   // Load admin data when panel is open and authenticated
   useEffect(() => {
-    const activeToken = adminSessionToken;
-    if (isAdminOpen && isAdminAuthenticated && activeToken) {
-      fetchAdminData(activeToken);
+    if (currentPath === '/admin' && authIdToken) {
+      fetchAdminData();
     }
-  }, [isAdminOpen, isAdminAuthenticated, adminSessionToken]);
+  }, [currentPath, authIdToken]);
 
   // Watermark States
   const [watermarkUrl, setWatermarkUrl] = useState<string | null>(null);
@@ -1038,9 +1450,14 @@ export default function App() {
           reader.onerror = () => reject(new Error('FileReader failed to process the file'));
         });
 
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (authIdToken) {
+          headers['Authorization'] = `Bearer ${authIdToken}`;
+        }
+
         const uploadRes = await fetch('/api/upload', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify({ videoBase64: base64Data, fileName: file.name })
         });
 
@@ -2051,32 +2468,109 @@ export default function App() {
     }, 150);
   };
 
-  if (currentUser && userQuota?.disabled) {
+  if (isAuthLoading) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-[#0A0A0A] text-white p-6 font-sans">
-        <div className="w-full max-w-md bg-[#0F0F13] border border-red-500/20 rounded-2xl p-8 text-center space-y-6 shadow-2xl shadow-red-500/5">
-          <div className="w-16 h-16 bg-red-500/10 border border-red-500/30 text-red-400 rounded-full flex items-center justify-center mx-auto animate-pulse">
-            <Lock className="w-8 h-8" />
+      <div className="flex flex-col items-center justify-center min-h-screen bg-[#070707] text-white">
+        <div className="relative">
+          <div className="w-16 h-16 rounded-full border-4 border-[#10B981]/10 border-t-[#10B981] animate-spin"></div>
+          <div className="absolute inset-0 flex items-center justify-center">
+            <RiddimLogo size={32} />
+          </div>
+        </div>
+        <p className="mt-5 text-[10px] font-black text-white/50 tracking-widest uppercase font-mono animate-pulse">
+          Establishing Secure Handshake...
+        </p>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    if (currentPath !== '/login') {
+      setTimeout(() => {
+        navigateTo('/login');
+      }, 0);
+    }
+    return (
+      <LoginPage
+        onGoogleLogin={handleGoogleLogin}
+        onEmailAuth={handleEmailAuthDirect}
+        onForgotPassword={handleForgotPasswordDirect}
+        authModalError={authModalError}
+        setAuthModalError={setAuthModalError}
+        isSubmittingAuth={isSubmittingAuth}
+        rememberMe={rememberMe}
+        setRememberMe={setRememberMe}
+      />
+    );
+  }
+
+  if (currentUser && (userQuota?.disabled || userQuota?.enabled === false)) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-[#070707] text-white p-6">
+        <div className="max-w-md w-full bg-[#0e0e13] border border-red-500/20 rounded-2xl p-8 text-center space-y-6 shadow-2xl">
+          <div className="w-16 h-16 bg-red-500/10 border border-red-500/20 text-red-400 rounded-2xl flex items-center justify-center mx-auto shadow-inner">
+            <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m0-8V5m0 11h.01M12 2a10 10 0 110 20 10 10 0 010-20z" />
+            </svg>
           </div>
           <div className="space-y-2">
-            <h2 className="text-xl font-extrabold text-white tracking-tight">Access Denied</h2>
-            <p className="text-sm text-white/60 leading-relaxed">
-              Your account (<strong className="text-white">{currentUser.email}</strong>) has been disabled/blocked by the administrator of RiddimRoom.
-            </p>
-            <p className="text-xs text-white/40 pt-2">
-              Please contact the administrator at <a href="mailto:ramjitinvestments@gmail.com" className="text-indigo-400 hover:underline font-bold">ramjitinvestments@gmail.com</a> for assistance.
+            <h2 className="text-lg font-black text-white tracking-tight uppercase">Access Restrained</h2>
+            <p className="text-xs text-white/60 leading-relaxed">
+              Your registered user profile has been suspended or disabled by the system administrator. Please request support clearance if you believe this is an error.
             </p>
           </div>
           <div className="pt-2">
             <button
               onClick={handleGoogleLogout}
-              className="w-full py-2.5 bg-white/5 hover:bg-white/10 text-white font-bold text-xs rounded-xl transition-all cursor-pointer border border-white/10"
+              className="w-full py-2.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-xl transition-all shadow-lg shadow-red-600/10 active:scale-[0.98]"
             >
-              Sign Out / Switch Account
+              Sign Out from Profile
             </button>
           </div>
         </div>
       </div>
+    );
+  }
+
+  if (currentPath === '/login') {
+    setTimeout(() => {
+      navigateTo('/dashboard');
+    }, 0);
+  }
+
+  if (currentPath === '/admin') {
+    return (
+      <ProtectedRoute
+        currentUser={currentUser}
+        isAuthLoading={isAuthLoading}
+        requiredRole="admin"
+        userQuota={userQuota}
+        redirectTo={navigateTo}
+      >
+        <AdminPanel
+          adminUsersList={adminUsersList}
+          adminLogsList={adminLogsList}
+          adminAuditLogs={adminAuditLogs}
+          adminNotifications={adminNotifications}
+          adminSettings={adminSettings}
+          fetchAdminData={fetchAdminData}
+          handleAdminUpdateUserFeatures={handleAdminUpdateUserFeatures}
+          handleAdminCreateUser={handleAdminCreateUser}
+          handleAdminChangePassword={handleAdminChangePassword}
+          handleAdminForceLogout={handleAdminForceLogout}
+          handleAdminForceLogoutAll={handleAdminForceLogoutAll}
+          handleAdminResetLimit={handleAdminResetLimit}
+          handleAdminToggleStatus={handleAdminToggleStatus}
+          handleAdminSetRole={handleAdminSetRole}
+          handleAdminDeleteUser={handleAdminDeleteUser}
+          handleAdminSaveSettings={handleAdminSaveSettings}
+          handleAdminSaveCMS={handleAdminSaveCMS}
+          handleAdminSaveSecurity={handleAdminSaveSecurity}
+          handleAdminSendNotification={handleAdminSendNotification}
+          navigateTo={navigateTo}
+          authIdToken={authIdToken}
+        />
+      </ProtectedRoute>
     );
   }
 
@@ -2097,10 +2591,7 @@ export default function App() {
         <div className="flex items-center gap-3">
           {/* Admin Panel Access Button */}
           <button
-            onClick={() => {
-              setIsAdminOpen(true);
-              setAdminPanelError(null);
-            }}
+            onClick={() => navigateTo('/admin')}
             className="py-1.5 px-3 rounded-lg text-xs font-semibold transition-all border border-indigo-500/20 bg-indigo-500/5 hover:bg-indigo-500/15 text-indigo-300 flex items-center gap-1 active:scale-[0.98]"
             title="Open Admin Settings Panel"
           >
@@ -2142,7 +2633,7 @@ export default function App() {
             <div className="w-5 h-5 rounded-full border-2 border-white/10 animate-spin border-t-transparent"></div>
           ) : currentUser ? (
             <div className="flex items-center gap-2">
-              <div className="flex items-center gap-2 bg-white/2 border border-white/5 rounded-xl pl-2 pr-1.5 py-1">
+              <div className="flex items-center gap-2 bg-white/5 border border-white/5 rounded-xl pl-2 pr-2 py-1">
                 {currentUser.photoURL ? (
                   <img
                     src={currentUser.photoURL}
@@ -2158,26 +2649,18 @@ export default function App() {
                 <div className="text-left hidden md:block max-w-[100px]">
                   <p className="text-[10px] font-semibold text-white truncate">{currentUser.displayName || 'User'}</p>
                 </div>
-                <button
-                  onClick={handleGoogleLogout}
-                  className="p-1 hover:bg-white/5 rounded-lg text-white/40 hover:text-white transition-all ml-1"
-                  title="Sign Out"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                </button>
               </div>
+              <button
+                onClick={handleGoogleLogout}
+                className="py-1.5 px-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 text-xs font-bold rounded-lg flex items-center gap-1.5 transition-all cursor-pointer active:scale-[0.98]"
+                title="Log Out"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Log Out</span>
+              </button>
             </div>
           ) : (
-            <button
-              onClick={() => {
-                setAuthModalError(null);
-                setIsAuthModalOpen(true);
-              }}
-              className="py-1.5 px-3 rounded-lg text-xs font-bold transition-all bg-indigo-600 hover:bg-indigo-500 text-white flex items-center gap-1.5 active:scale-[0.98] shadow-md shadow-indigo-600/10 shrink-0 cursor-pointer"
-            >
-              <UserIcon className="w-3.5 h-3.5" />
-              <span>Sign In</span>
-            </button>
+            <div className="text-[10px] text-white/40">Secure Session</div>
           )}
         </div>
       </header>
@@ -3494,7 +3977,7 @@ export default function App() {
 
       {/* Admin Panel Modal Overlay */}
       <AnimatePresence>
-        {isAdminOpen && (
+        {false && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -3509,240 +3992,896 @@ export default function App() {
             >
               {/* Header */}
               <div className="border-b border-white/5 bg-[#14141A] px-6 py-4 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Shield className="w-5 h-5 text-indigo-400" />
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-indigo-500/10 text-indigo-400 rounded-xl border border-indigo-500/20">
+                    <Shield className="w-5 h-5" />
+                  </div>
                   <div>
-                    <h3 className="text-sm font-bold text-white">RiddimroomCaption Administrator Panel</h3>
-                    <p className="text-[10px] text-white/40">Manage user quotas, roles, and review usage telemetry</p>
+                    <h3 className="text-sm font-bold text-white tracking-tight">RiddimroomCaption Executive Command Center</h3>
+                    <p className="text-[10px] text-white/40">Secure administrative operations, profile logs, security policies & live user control</p>
                   </div>
                 </div>
-                <button
-                  onClick={() => setIsAdminOpen(false)}
-                  className="p-1.5 hover:bg-white/5 rounded-lg text-white/40 hover:text-white transition-all cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setIsAdminOpen(false);
+                      handleGoogleLogout();
+                    }}
+                    className="py-1.5 px-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 text-xs font-bold rounded-lg flex items-center gap-1.5 transition-all cursor-pointer active:scale-[0.98]"
+                    title="Log Out Admin"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span>Log Out</span>
+                  </button>
+                  <button
+                    onClick={() => setIsAdminOpen(false)}
+                    className="p-1.5 hover:bg-white/5 rounded-lg text-white/40 hover:text-white transition-all cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
 
               {/* Body */}
               <div className="p-6 overflow-y-auto flex-1 space-y-4">
                 {adminPanelError && (
                   <div className="p-3 bg-red-500/10 border border-red-500/20 text-red-400 text-xs rounded-xl flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4" />
+                    <AlertCircle className="w-4 h-4 shrink-0" />
                     <span>{adminPanelError}</span>
                   </div>
                 )}
 
                 {!isAdminAuthenticated ? (
                   /* Password Verification Form */
-                  <form onSubmit={handleAdminAuth} className="max-w-md mx-auto py-8 space-y-4 text-center">
-                    <div className="w-12 h-12 bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 rounded-full flex items-center justify-center mx-auto mb-2">
-                      <Lock className="w-6 h-6" />
+                  <form onSubmit={handleAdminAuth} className="max-w-md mx-auto py-12 space-y-5 text-center">
+                    <div className="w-16 h-16 bg-gradient-to-tr from-indigo-600 to-indigo-400 text-white rounded-2xl flex items-center justify-center mx-auto shadow-lg shadow-indigo-500/20 mb-2">
+                      <Lock className="w-8 h-8" />
                     </div>
                     <div className="space-y-1">
-                      <h4 className="text-sm font-bold text-white">Authorized Access Only</h4>
-                      <p className="text-xs text-white/40">Please input the administrator secret key passcode to unlock this panel.</p>
+                      <h4 className="text-base font-black text-white tracking-tight">Authorized Operations Gateway</h4>
+                      <p className="text-xs text-white/40">Enter the system master administrative passcode to synchronize credentials and log telemetry.</p>
                     </div>
-                    <div className="space-y-2">
+                    <div className="space-y-3 pt-2">
                       <input
                         type="password"
-                        placeholder="Enter admin password..."
+                        placeholder="Enter admin passcode..."
                         value={adminInputPassword}
                         onChange={(e) => setAdminInputPassword(e.target.value)}
-                        className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 rounded-xl text-xs text-white placeholder-white/30 focus:outline-none focus:border-indigo-500 transition-all text-center"
+                        className="w-full px-4 py-3 bg-[#1A1A24] border border-white/10 rounded-xl text-xs text-white placeholder-white/20 focus:outline-none focus:border-indigo-500 transition-all text-center tracking-widest"
                         autoFocus
                       />
                       <button
                         type="submit"
-                        className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl transition-all cursor-pointer"
+                        className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-indigo-600/15 transition-all cursor-pointer active:scale-[0.98]"
                       >
-                        Unlock Panel
+                        Unlock System Console
                       </button>
                     </div>
                   </form>
                 ) : (
                   /* Admin Dashboard Interface */
-                  <div className="space-y-4">
-                    {/* Tabs / Actions Bar */}
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-white/5 pb-3">
-                      <div className="flex gap-2 bg-[#1A1A24] p-1 rounded-xl">
+                  <div className="space-y-5">
+                    {/* Multi-Tab Command Navigation */}
+                    <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 border-b border-white/5 pb-3">
+                      <div className="flex flex-wrap gap-1 bg-[#14141A] p-1 rounded-xl border border-white/5 overflow-x-auto">
+                        <button
+                          onClick={() => setAdminActiveTab('dashboard')}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                            adminActiveTab === 'dashboard' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10' : 'text-white/40 hover:text-white'
+                          }`}
+                        >
+                          <Activity className="w-3.5 h-3.5" />
+                          <span>Telemetry</span>
+                        </button>
                         <button
                           onClick={() => setAdminActiveTab('users')}
                           className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
-                            adminActiveTab === 'users' ? 'bg-indigo-600 text-white' : 'text-white/40 hover:text-white'
+                            adminActiveTab === 'users' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10' : 'text-white/40 hover:text-white'
                           }`}
                         >
                           <Users className="w-3.5 h-3.5" />
-                          <span>Registered Users ({adminUsersList.length})</span>
+                          <span>User Control ({adminUsersList.length})</span>
                         </button>
                         <button
-                          onClick={() => setAdminActiveTab('logs')}
+                          onClick={() => setAdminActiveTab('cms')}
                           className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
-                            adminActiveTab === 'logs' ? 'bg-indigo-600 text-white' : 'text-white/40 hover:text-white'
+                            adminActiveTab === 'cms' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10' : 'text-white/40 hover:text-white'
                           }`}
                         >
-                          <BarChart3 className="w-3.5 h-3.5" />
-                          <span>Transcription Telemetry ({adminLogsList.length})</span>
+                          <Globe className="w-3.5 h-3.5" />
+                          <span>CMS Editor</span>
+                        </button>
+                        <button
+                          onClick={() => setAdminActiveTab('settings')}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                            adminActiveTab === 'settings' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10' : 'text-white/40 hover:text-white'
+                          }`}
+                        >
+                          <Settings className="w-3.5 h-3.5" />
+                          <span>Platform Settings</span>
+                        </button>
+                        <button
+                          onClick={() => setAdminActiveTab('security')}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                            adminActiveTab === 'security' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10' : 'text-white/40 hover:text-white'
+                          }`}
+                        >
+                          <Lock className="w-3.5 h-3.5" />
+                          <span>Security Policies</span>
+                        </button>
+                        <button
+                          onClick={() => setAdminActiveTab('notifications')}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                            adminActiveTab === 'notifications' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10' : 'text-white/40 hover:text-white'
+                          }`}
+                        >
+                          <Bell className="w-3.5 h-3.5" />
+                          <span>Announcements ({adminNotifications.length})</span>
+                        </button>
+                        <button
+                          onClick={() => setAdminActiveTab('audit')}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                            adminActiveTab === 'audit' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/10' : 'text-white/40 hover:text-white'
+                          }`}
+                        >
+                          <History className="w-3.5 h-3.5" />
+                          <span>Audits ({adminAuditLogs.length})</span>
                         </button>
                       </div>
 
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 self-end xl:self-auto">
                         <button
                           onClick={() => fetchAdminData()}
                           className="p-2 bg-white/5 hover:bg-white/10 text-white/80 hover:text-white rounded-xl text-xs flex items-center gap-1.5 border border-white/5 transition-all cursor-pointer"
                         >
                           <RefreshCw className="w-3.5 h-3.5" />
-                          <span>Refresh</span>
+                          <span>Sync Data</span>
                         </button>
                         <button
                           onClick={() => {
-                            setAdminSessionToken(null);
-                            localStorage.removeItem('admin_token');
                             setIsAdminAuthenticated(false);
                           }}
                           className="px-3 py-2 bg-red-600/10 hover:bg-red-600 text-red-400 hover:text-white rounded-xl text-xs font-semibold transition-all border border-red-500/10 cursor-pointer"
                         >
-                          Lock Session
+                          Lock Console
                         </button>
                       </div>
                     </div>
 
-                    {/* Tab Panels */}
-                    {adminActiveTab === 'users' ? (
-                      <div className="border border-white/5 rounded-xl overflow-hidden bg-[#14141A]">
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-left border-collapse">
-                            <thead>
-                              <tr className="bg-white/2 border-b border-white/5 text-[10px] uppercase tracking-wider text-white/40">
-                                <th className="px-4 py-3 font-bold">User Information</th>
-                                <th className="px-4 py-3 font-bold">System Role</th>
-                                <th className="px-4 py-3 font-bold">Daily Count</th>
-                                <th className="px-4 py-3 font-bold">Lifetime Total</th>
-                                <th className="px-4 py-3 font-bold text-right">Actions</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-white/5 text-xs text-white/80">
-                              {adminUsersList.length === 0 ? (
-                                <tr>
-                                  <td colSpan={5} className="px-4 py-8 text-center text-white/30">
-                                    No registered users found in Firestore.
-                                  </td>
+                    {/* Tab 1: TELEMETRY & SYSTEM ANALYTICS */}
+                    {adminActiveTab === 'dashboard' && (
+                      <div className="space-y-5">
+                        {/* Metrics Grid */}
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                          <div className="bg-[#14141A] border border-white/5 p-4 rounded-xl flex flex-col justify-between space-y-2">
+                            <span className="text-[10px] font-bold text-white/40 tracking-wider uppercase">Active Users</span>
+                            <span className="text-xl font-black text-white">{adminUsersList.length}</span>
+                            <span className="text-[9px] text-emerald-400 flex items-center gap-1 font-semibold">
+                              <span>↑ +12.4%</span>
+                              <span className="text-white/20">this week</span>
+                            </span>
+                          </div>
+                          <div className="bg-[#14141A] border border-white/5 p-4 rounded-xl flex flex-col justify-between space-y-2">
+                            <span className="text-[10px] font-bold text-white/40 tracking-wider uppercase">Transcriptions</span>
+                            <span className="text-xl font-black text-white">{adminLogsList.length}</span>
+                            <span className="text-[9px] text-[#10B981] flex items-center gap-1 font-semibold">
+                              <span className="animate-pulse">●</span>
+                              <span>Live Engine</span>
+                            </span>
+                          </div>
+                          <div className="bg-[#14141A] border border-white/5 p-4 rounded-xl flex flex-col justify-between space-y-2">
+                            <span className="text-[10px] font-bold text-white/40 tracking-wider uppercase">Quotas Active</span>
+                            <span className="text-xl font-black text-white">
+                              {adminUsersList.filter(u => u.dailyCount > 0).length}
+                            </span>
+                            <span className="text-[9px] text-white/40 font-semibold">Standard 2-Limit policy</span>
+                          </div>
+                          <div className="bg-[#14141A] border border-white/5 p-4 rounded-xl flex flex-col justify-between space-y-2">
+                            <span className="text-[10px] font-bold text-white/40 tracking-wider uppercase">MFA Compliance</span>
+                            <span className="text-xl font-black text-indigo-400">
+                              {editSecMultiFactor ? 'POLICIED' : 'OPTIONAL'}
+                            </span>
+                            <span className="text-[9px] text-white/40 font-semibold">Session length: {editSecSessionTimeout}m</span>
+                          </div>
+                        </div>
+
+                        {/* Beautiful Visual SVG Graph */}
+                        <div className="bg-[#14141A] border border-white/5 rounded-xl p-5 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <h4 className="text-xs font-bold text-white uppercase tracking-wider">Historical API Volumetrics</h4>
+                            <span className="text-[10px] text-white/40">Last 7 days sequence</span>
+                          </div>
+                          <div className="h-44 w-full flex items-end justify-between gap-1 pt-4 border-b border-white/5">
+                            {Array.from({ length: 7 }).map((_, i) => {
+                              // Generate beautiful responsive histogram blocks
+                              const values = [12, 18, 15, 25, 32, 28, 45];
+                              const heightPercent = `${(values[i] / 50) * 100}%`;
+                              const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+                              return (
+                                <div key={i} className="flex-1 flex flex-col items-center group cursor-pointer h-full justify-end">
+                                  <div className="text-[9px] text-indigo-400 font-bold opacity-0 group-hover:opacity-100 transition-opacity mb-1 font-mono">
+                                    {values[i]}
+                                  </div>
+                                  <div 
+                                    className="w-full bg-gradient-to-t from-indigo-600/20 to-indigo-500 hover:to-indigo-400 rounded-t-md transition-all duration-300" 
+                                    style={{ height: heightPercent }}
+                                  />
+                                  <span className="text-[9px] text-white/30 mt-2 font-semibold tracking-wider font-mono">
+                                    {days[i]}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Tab 2: USER CONTROL */}
+                    {adminActiveTab === 'users' && (
+                      <div className="space-y-4">
+                        {/* Controls Header */}
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="relative flex-1">
+                            <input
+                              type="text"
+                              placeholder="Search users by name, email or uid..."
+                              value={adminUsersSearch}
+                              onChange={(e) => setAdminUsersSearch(e.target.value)}
+                              className="w-full px-4 py-2 bg-[#14141A] border border-white/10 focus:border-indigo-500 rounded-xl text-xs text-white placeholder-white/20 outline-none transition-all pl-10"
+                            />
+                            <Search className="w-4 h-4 text-white/35 absolute left-3.5 top-3" />
+                          </div>
+
+                          <button
+                            onClick={() => {
+                              setAdminSelectedUser({
+                                uid: 'NEW_USER',
+                                displayName: '',
+                                email: '',
+                                role: 'user',
+                                disabled: false,
+                                dailyCount: 0,
+                                totalTranscribes: 0
+                              });
+                              setNewUserDisplayName('');
+                              setNewUserEmail('');
+                              setNewUserPassword('');
+                              setNewUserRole('user');
+                            }}
+                            className="py-2 px-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 transition-all cursor-pointer active:scale-[0.98]"
+                          >
+                            <Plus className="w-4 h-4" />
+                            <span>Add New User Account</span>
+                          </button>
+                        </div>
+
+                        {/* Interactive Management Modal Overlay/Panel for Selected User */}
+                        {adminSelectedUser && (
+                          <div className="p-4 bg-indigo-950/20 border border-indigo-500/20 rounded-xl space-y-4 relative">
+                            <button 
+                              onClick={() => setAdminSelectedUser(null)} 
+                              className="absolute top-3 right-3 p-1 hover:bg-white/15 rounded-lg text-white/50 hover:text-white"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+
+                            {adminSelectedUser.uid === 'NEW_USER' ? (
+                              <div className="space-y-3">
+                                <h4 className="text-xs font-black text-indigo-400 uppercase tracking-wider">Manually Provision Account</h4>
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                  <div className="space-y-1">
+                                    <label className="text-[10px] font-bold text-white/50 uppercase">Name</label>
+                                    <input 
+                                      type="text" 
+                                      placeholder="Full name"
+                                      value={newUserDisplayName}
+                                      onChange={(e) => setNewUserDisplayName(e.target.value)}
+                                      className="w-full px-3 py-1.5 bg-[#14141A] border border-white/10 rounded-lg text-xs focus:border-indigo-500 focus:outline-none"
+                                    />
+                                  </div>
+                                  <div className="space-y-1">
+                                    <label className="text-[10px] font-bold text-white/50 uppercase">Email</label>
+                                    <input 
+                                      type="email" 
+                                      placeholder="email@example.com"
+                                      value={newUserEmail}
+                                      onChange={(e) => setNewUserEmail(e.target.value)}
+                                      className="w-full px-3 py-1.5 bg-[#14141A] border border-white/10 rounded-lg text-xs focus:border-indigo-500 focus:outline-none"
+                                    />
+                                  </div>
+                                  <div className="space-y-1">
+                                    <label className="text-[10px] font-bold text-white/50 uppercase">Password</label>
+                                    <input 
+                                      type="password" 
+                                      placeholder="At least 6 chars"
+                                      value={newUserPassword}
+                                      onChange={(e) => setNewUserPassword(e.target.value)}
+                                      className="w-full px-3 py-1.5 bg-[#14141A] border border-white/10 rounded-lg text-xs focus:border-indigo-500 focus:outline-none"
+                                    />
+                                  </div>
+                                </div>
+                                <div className="flex items-center justify-between gap-3 pt-2">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[10px] font-bold text-white/50 uppercase">System Role:</span>
+                                    <select 
+                                      value={newUserRole}
+                                      onChange={(e: any) => setNewUserRole(e.target.value)}
+                                      className="bg-[#14141A] border border-white/10 text-white rounded-lg px-2.5 py-1 text-xs"
+                                    >
+                                      <option value="user">Standard User</option>
+                                      <option value="admin">Administrator</option>
+                                    </select>
+                                  </div>
+                                  <button
+                                    onClick={() => {
+                                      handleAdminCreateUser({
+                                        email: newUserEmail,
+                                        password: newUserPassword,
+                                        displayName: newUserDisplayName,
+                                        role: newUserRole
+                                      });
+                                      setAdminSelectedUser(null);
+                                    }}
+                                    className="py-1.5 px-3 bg-[#10B981] hover:bg-[#059669] text-white text-xs font-bold rounded-lg cursor-pointer"
+                                  >
+                                    Provision Core Account
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="space-y-3">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center font-bold text-sm text-white">
+                                    {adminSelectedUser.email?.[0]?.toUpperCase()}
+                                  </div>
+                                  <div>
+                                    <h4 className="text-xs font-bold text-white leading-none">{adminSelectedUser.displayName || 'No Name'}</h4>
+                                    <span className="text-[10px] text-white/40">{adminSelectedUser.email} (UID: {adminSelectedUser.uid})</span>
+                                  </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 border-t border-white/5 pt-3">
+                                  {/* Credentials management */}
+                                  <div className="space-y-3">
+                                    <span className="text-[10px] font-bold text-indigo-400 block uppercase tracking-wider">Credential Sovereignty</span>
+                                    <div className="flex items-center gap-2">
+                                      <input 
+                                        type="password" 
+                                        placeholder="Enter new master password..."
+                                        value={changePassNewPassword}
+                                        onChange={(e) => setChangePassNewPassword(e.target.value)}
+                                        className="flex-1 px-3 py-1.5 bg-[#14141A] border border-white/10 rounded-lg text-xs text-white placeholder-white/20 focus:outline-none"
+                                      />
+                                      <button
+                                        onClick={() => {
+                                          handleAdminChangePassword(adminSelectedUser.uid, changePassNewPassword);
+                                          setChangePassNewPassword('');
+                                        }}
+                                        className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold rounded-lg cursor-pointer shrink-0"
+                                      >
+                                        Change Password
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  {/* Session operations */}
+                                  <div className="space-y-3">
+                                    <span className="text-[10px] font-bold text-indigo-400 block uppercase tracking-wider">Active State Control</span>
+                                    <div className="flex gap-2">
+                                      <button
+                                        onClick={() => handleAdminForceLogout(adminSelectedUser.uid)}
+                                        className="flex-1 py-1.5 px-3 bg-red-600/15 hover:bg-red-600 text-red-400 hover:text-white border border-red-500/20 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 transition-all"
+                                      >
+                                        <LogOut className="w-3.5 h-3.5" />
+                                        <span>Revoke Active Sessions</span>
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Registered Users Table */}
+                        <div className="border border-white/5 rounded-xl overflow-hidden bg-[#14141A]">
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left border-collapse">
+                              <thead>
+                                <tr className="bg-white/2 border-b border-white/5 text-[10px] uppercase tracking-wider text-white/40">
+                                  <th className="px-4 py-3 font-bold">User Identity</th>
+                                  <th className="px-4 py-3 font-bold">Platform Role</th>
+                                  <th className="px-4 py-3 font-bold">Limit State</th>
+                                  <th className="px-4 py-3 font-bold">Auditable Usage</th>
+                                  <th className="px-4 py-3 font-bold text-right">Actions</th>
                                 </tr>
-                              ) : (
-                                adminUsersList.map((usr: any) => (
-                                  <tr key={usr.uid} className="hover:bg-white/2 transition-all">
-                                    <td className="px-4 py-3">
-                                      <div className="flex items-center gap-2">
-                                        {usr.photoURL ? (
-                                          <img src={usr.photoURL} className="w-7 h-7 rounded-full border border-white/10" referrerPolicy="no-referrer" />
-                                        ) : (
-                                          <div className="w-7 h-7 rounded-full bg-indigo-600 flex items-center justify-center text-[10px] font-bold">
-                                            {usr.email?.[0]?.toUpperCase()}
-                                          </div>
-                                        )}
-                                        <div>
-                                          <p className="font-bold text-white leading-tight">{usr.displayName || 'No Name'}</p>
-                                          <p className="text-[10px] text-white/40">{usr.email}</p>
-                                        </div>
-                                      </div>
-                                    </td>
-                                    <td className="px-4 py-3">
-                                      <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
-                                        usr.role === 'admin' ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20' : 'bg-white/5 text-white/60'
-                                      }`}>
-                                        {usr.role === 'admin' ? 'ADMINISTRATOR' : 'STANDARD USER'}
-                                      </span>
-                                    </td>
-                                    <td className="px-4 py-3">
-                                      <span className={`font-mono font-bold ${usr.dailyCount >= 2 ? 'text-red-400' : 'text-white'}`}>
-                                        {usr.dailyCount || 0} / 2
-                                      </span>
-                                    </td>
-                                    <td className="px-4 py-3 font-mono">
-                                      {usr.totalTranscribes || 0} transcribes
-                                    </td>
-                                    <td className="px-4 py-3 text-right">
-                                      <div className="flex items-center justify-end gap-1.5">
-                                        <button
-                                          onClick={() => handleAdminToggleStatus(usr.uid, !usr.disabled)}
-                                          className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer border ${
-                                            usr.disabled 
-                                              ? 'bg-red-500/15 hover:bg-red-500/30 border-red-500/25 text-red-400' 
-                                              : 'bg-emerald-500/15 hover:bg-emerald-500/30 border-emerald-500/25 text-emerald-400'
-                                          }`}
-                                          title={usr.disabled ? "Click to allow app use" : "Click to block app use"}
-                                        >
-                                          {usr.disabled ? 'App: Blocked' : 'App: Active'}
-                                        </button>
-                                        <button
-                                          onClick={() => handleAdminResetLimit(usr.uid)}
-                                          className="px-2.5 py-1 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white rounded-lg text-[10px] font-bold transition-all cursor-pointer"
-                                          title="Reset daily usage limit to 0"
-                                        >
-                                          Reset Limit
-                                        </button>
-                                        <button
-                                          onClick={() => handleAdminSetRole(usr.uid, usr.role === 'admin' ? 'user' : 'admin')}
-                                          className="px-2.5 py-1 bg-white/5 hover:bg-white/10 text-white rounded-lg text-[10px] font-bold transition-all border border-white/5 cursor-pointer"
-                                        >
-                                          {usr.role === 'admin' ? 'Revoke Admin' : 'Make Admin'}
-                                        </button>
-                                      </div>
+                              </thead>
+                              <tbody className="divide-y divide-white/5 text-xs text-white/80">
+                                {adminUsersList.filter(usr => {
+                                  const query = adminUsersSearch.toLowerCase().trim();
+                                  if (!query) return true;
+                                  const name = (usr.displayName || usr.name || '').toLowerCase();
+                                  const email = (usr.email || '').toLowerCase();
+                                  const uid = (usr.uid || '').toLowerCase();
+                                  return name.includes(query) || email.includes(query) || uid.includes(query);
+                                }).length === 0 ? (
+                                  <tr>
+                                    <td colSpan={5} className="px-4 py-8 text-center text-white/30 font-sans">
+                                      No registered users matched the active filters.
                                     </td>
                                   </tr>
-                                ))
-                              )}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="border border-white/5 rounded-xl overflow-hidden bg-[#14141A]">
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-left border-collapse">
-                            <thead>
-                              <tr className="bg-white/2 border-b border-white/5 text-[10px] uppercase tracking-wider text-white/40">
-                                <th className="px-4 py-3 font-bold">Timestamp</th>
-                                <th className="px-4 py-3 font-bold">User Account</th>
-                                <th className="px-4 py-3 font-bold">Details</th>
-                                <th className="px-4 py-3 font-bold text-right">Status</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-white/5 text-xs text-white/80 font-mono">
-                              {adminLogsList.length === 0 ? (
-                                <tr>
-                                  <td colSpan={4} className="px-4 py-8 text-center font-sans text-white/30">
-                                    No transcription telemetry logs captured.
-                                  </td>
-                                </tr>
-                              ) : (
-                                adminLogsList.map((log: any, idx: number) => {
-                                  let timeStr = 'Invalid Date';
-                                  if (log.timestamp) {
-                                    const date = log.timestamp.seconds ? new Date(log.timestamp.seconds * 1000) : new Date(log.timestamp);
-                                    timeStr = date.toLocaleString();
-                                  }
-                                  return (
-                                    <tr key={log.id || idx} className="hover:bg-white/2 transition-all">
-                                      <td className="px-4 py-3 text-white/60 text-[11px]">{timeStr}</td>
+                                ) : (
+                                  adminUsersList.filter(usr => {
+                                    const query = adminUsersSearch.toLowerCase().trim();
+                                    if (!query) return true;
+                                    const name = (usr.displayName || usr.name || '').toLowerCase();
+                                    const email = (usr.email || '').toLowerCase();
+                                    const uid = (usr.uid || '').toLowerCase();
+                                    return name.includes(query) || email.includes(query) || uid.includes(query);
+                                  }).map((usr: any) => (
+                                    <tr key={usr.uid} className="hover:bg-white/2 transition-all">
                                       <td className="px-4 py-3">
-                                        <div className="font-sans font-bold text-white">{log.displayName || 'No Name'}</div>
-                                        <div className="text-[10px] text-white/40">{log.email}</div>
+                                        <div className="flex items-center gap-2">
+                                          <div className="w-8 h-8 rounded-full bg-indigo-600/20 text-indigo-400 border border-indigo-500/20 flex items-center justify-center font-bold text-xs uppercase">
+                                            {usr.email?.[0] || 'U'}
+                                          </div>
+                                          <div>
+                                            <p className="font-bold text-white leading-tight flex items-center gap-1.5">
+                                              <span>{usr.displayName || usr.name || 'Anonymous User'}</span>
+                                              {usr.email?.toLowerCase() === 'ramjitinvestments@gmail.com' && (
+                                                <span className="bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[8px] font-black uppercase px-1 rounded">MASTER</span>
+                                              )}
+                                            </p>
+                                            <p className="text-[10px] text-white/40">{usr.email}</p>
+                                          </div>
+                                        </div>
                                       </td>
-                                      <td className="px-4 py-3 text-[11px] font-sans">
-                                        Ran automatic full speech-to-text sequence
-                                      </td>
-                                      <td className="px-4 py-3 text-right">
-                                        <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 text-[10px] font-bold font-sans">
-                                          SUCCESS
+                                      <td className="px-4 py-3">
+                                        <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border ${
+                                          usr.role === 'admin' 
+                                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25' 
+                                            : 'bg-white/5 text-white/60 border-white/5'
+                                        }`}>
+                                          {usr.role === 'admin' ? 'ADMINISTRATOR' : 'STANDARD'}
                                         </span>
                                       </td>
+                                      <td className="px-4 py-3 font-mono font-bold">
+                                        <span className={usr.dailyCount >= editDefaultLimit ? 'text-red-400' : 'text-emerald-400'}>
+                                          {usr.dailyCount || 0}
+                                        </span>
+                                        <span className="text-white/25"> / {editDefaultLimit}</span>
+                                      </td>
+                                      <td className="px-4 py-3 font-mono text-[11px] text-white/50">
+                                        {usr.totalTranscribes || 0} total sequences
+                                      </td>
+                                      <td className="px-4 py-3 text-right">
+                                        <div className="flex items-center justify-end gap-1.5">
+                                          <button
+                                            onClick={() => setAdminSelectedUser(usr)}
+                                            className="px-2.5 py-1 bg-white/5 hover:bg-white/10 text-white rounded-lg text-[10px] font-bold border border-white/5 transition-all"
+                                          >
+                                            Manage
+                                          </button>
+                                          <button
+                                            onClick={() => handleAdminToggleStatus(usr.uid, !usr.disabled)}
+                                            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all border ${
+                                              usr.disabled 
+                                                ? 'bg-red-500/10 hover:bg-red-500/25 border-red-500/20 text-red-400' 
+                                                : 'bg-emerald-500/10 hover:bg-emerald-500/25 border-emerald-500/20 text-emerald-400'
+                                            }`}
+                                          >
+                                            {usr.disabled ? 'App: Blocked' : 'App: Active'}
+                                          </button>
+                                          <button
+                                            onClick={() => handleAdminResetLimit(usr.uid)}
+                                            className="px-2 py-1 bg-indigo-600/10 hover:bg-indigo-600 text-indigo-400 hover:text-white rounded-lg text-[10px] font-bold border border-indigo-500/10 transition-all"
+                                            title="Clear usage quota to 0"
+                                          >
+                                            Reset Quota
+                                          </button>
+                                          <button
+                                            onClick={() => handleAdminSetRole(usr.uid, usr.role === 'admin' ? 'user' : 'admin')}
+                                            disabled={usr.email?.toLowerCase() === 'ramjitinvestments@gmail.com'}
+                                            className="px-2 py-1 bg-white/5 hover:bg-white/10 text-white rounded-lg text-[10px] font-bold border border-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                                          >
+                                            {usr.role === 'admin' ? 'Revoke Admin' : 'Make Admin'}
+                                          </button>
+                                          <button
+                                            onClick={() => handleAdminDeleteUser(usr.uid)}
+                                            disabled={usr.email?.toLowerCase() === 'ramjitinvestments@gmail.com'}
+                                            className="p-1 bg-red-600/10 hover:bg-red-600 text-red-400 hover:text-white rounded-lg border border-red-500/10 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                                            title="Permanently Expunge Account"
+                                          >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                          </button>
+                                        </div>
+                                      </td>
                                     </tr>
-                                  );
-                                })
-                              )}
-                            </tbody>
-                          </table>
+                                  ))
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Tab 3: CMS CONTENT EDITOR */}
+                    {adminActiveTab === 'cms' && (
+                      <form 
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          handleAdminSaveCMS({
+                            headline: editCmsHeadline,
+                            subheadline: editCmsSubheadline,
+                            themeColor: editCmsThemeColor,
+                            presetStyles: editCmsPresetStyles
+                          });
+                        }} 
+                        className="bg-[#14141A] border border-white/5 p-6 rounded-xl space-y-4 text-left"
+                      >
+                        <div className="flex items-center gap-2 border-b border-white/5 pb-2">
+                          <Globe className="w-4 h-4 text-indigo-400" />
+                          <h4 className="text-xs font-black text-white uppercase tracking-wider">Interactive Public Landing CMS Configuration</h4>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-white/50 block">Hero Title Heading</label>
+                            <input 
+                              type="text" 
+                              value={editCmsHeadline}
+                              onChange={(e) => setEditCmsHeadline(e.target.value)}
+                              className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 focus:border-indigo-500 rounded-xl text-xs text-white"
+                              placeholder="e.g. Dynamic Video Captions Creator"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-white/50 block">Hero Subheading Description</label>
+                            <input 
+                              type="text" 
+                              value={editCmsSubheadline}
+                              onChange={(e) => setEditCmsSubheadline(e.target.value)}
+                              className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 focus:border-indigo-500 rounded-xl text-xs text-white"
+                              placeholder="e.g. Professional speech sync technology"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-white/50 block">Branding Primary Accent Color</label>
+                            <div className="flex gap-2">
+                              <input 
+                                type="color" 
+                                value={editCmsThemeColor}
+                                onChange={(e) => setEditCmsThemeColor(e.target.value)}
+                                className="w-10 h-9 p-0.5 bg-[#1A1A24] border border-white/10 rounded-xl cursor-pointer shrink-0"
+                              />
+                              <input 
+                                type="text" 
+                                value={editCmsThemeColor}
+                                onChange={(e) => setEditCmsThemeColor(e.target.value)}
+                                className="w-full px-4 py-2 bg-[#1A1A24] border border-white/10 focus:border-indigo-500 rounded-xl text-xs text-white font-mono"
+                              />
+                            </div>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-white/50 block">Caption CSS Presets Definition</label>
+                            <select 
+                              value={editCmsPresetStyles}
+                              onChange={(e) => setEditCmsPresetStyles(e.target.value)}
+                              className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 focus:border-indigo-500 rounded-xl text-xs text-white"
+                            >
+                              <option value="karaoke">Subtle Karaoke Highlight</option>
+                              <option value="brutalist">Bold Brutalist Outline</option>
+                              <option value="classic">Minimal Center Subtitle</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div className="pt-2">
+                          <button
+                            type="submit"
+                            className="py-2.5 px-4 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition-all cursor-pointer active:scale-[0.98]"
+                          >
+                            Save CMS Configuration
+                          </button>
+                        </div>
+                      </form>
+                    )}
+
+                    {/* Tab 4: PLATFORM CONFIGURATION SETTINGS */}
+                    {adminActiveTab === 'settings' && (
+                      <form 
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          handleAdminSaveSettings({
+                            maxFileSizeMb: editMaxFileSize,
+                            defaultDailyQuota: editDefaultLimit,
+                            registrationOpen: editRegistrationOpen,
+                            maintenanceMode: editMaintenanceMode,
+                            systemMessage: editSystemMessage
+                          });
+                        }} 
+                        className="bg-[#14141A] border border-white/5 p-6 rounded-xl space-y-4 text-left"
+                      >
+                        <div className="flex items-center gap-2 border-b border-white/5 pb-2">
+                          <Sliders className="w-4 h-4 text-indigo-400" />
+                          <h4 className="text-xs font-black text-white uppercase tracking-wider">System Operations Control Settings</h4>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="flex items-center justify-between p-3 bg-white/2 rounded-xl border border-white/5">
+                            <div className="space-y-0.5">
+                              <span className="text-xs font-bold text-white">Enable Open Registration</span>
+                              <p className="text-[10px] text-white/40">Toggle public accounts self-provisioning gate.</p>
+                            </div>
+                            <input 
+                              type="checkbox" 
+                              checked={editRegistrationOpen}
+                              onChange={(e) => setEditRegistrationOpen(e.target.checked)}
+                              className="w-4 h-4 rounded text-indigo-600 focus:ring-0"
+                            />
+                          </div>
+                          <div className="flex items-center justify-between p-3 bg-white/2 rounded-xl border border-white/5">
+                            <div className="space-y-0.5">
+                              <span className="text-xs font-bold text-white">System Maintenance Mode</span>
+                              <p className="text-[10px] text-white/40">Lock down features for standard user interactions.</p>
+                            </div>
+                            <input 
+                              type="checkbox" 
+                              checked={editMaintenanceMode}
+                              onChange={(e) => setEditMaintenanceMode(e.target.checked)}
+                              className="w-4 h-4 rounded text-red-600 focus:ring-0"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-white/50 block">Max Allowed Video Upload Size (MB)</label>
+                            <input 
+                              type="number" 
+                              value={editMaxFileSize}
+                              onChange={(e) => setEditMaxFileSize(parseInt(e.target.value) || 100)}
+                              className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 rounded-xl text-xs text-white"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-white/50 block">Default Daily Transcribe Quota Limit</label>
+                            <input 
+                              type="number" 
+                              value={editDefaultLimit}
+                              onChange={(e) => setEditDefaultLimit(parseInt(e.target.value) || 2)}
+                              className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 rounded-xl text-xs text-white"
+                            />
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-white/50 block">System Maintenance Banner / Message Text</label>
+                          <textarea 
+                            value={editSystemMessage}
+                            onChange={(e) => setEditSystemMessage(e.target.value)}
+                            rows={3}
+                            className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 rounded-xl text-xs text-white focus:outline-none"
+                            placeholder="Announce maintenance periods or important updates..."
+                          />
+                        </div>
+                        <div className="pt-2">
+                          <button
+                            type="submit"
+                            className="py-2.5 px-4 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition-all cursor-pointer active:scale-[0.98]"
+                          >
+                            Save Platform Configuration
+                          </button>
+                        </div>
+                      </form>
+                    )}
+
+                    {/* Tab 5: SECURITY POLICIES */}
+                    {adminActiveTab === 'security' && (
+                      <form 
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          handleAdminSaveSecurity({
+                            adminPasscode: editSecAdminPass,
+                            maxLoginAttempts: editSecMaxAttempts,
+                            sessionTimeoutMinutes: editSecSessionTimeout,
+                            multiFactorEnforced: editSecMultiFactor
+                          });
+                        }} 
+                        className="bg-[#14141A] border border-white/5 p-6 rounded-xl space-y-4 text-left"
+                      >
+                        <div className="flex items-center gap-2 border-b border-white/5 pb-2">
+                          <Shield className="w-4 h-4 text-red-400" />
+                          <h4 className="text-xs font-black text-white uppercase tracking-wider">Advanced Cyber-Security Access Policies</h4>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-white/50 block">System Administrator Master Passcode</label>
+                            <input 
+                              type="password" 
+                              value={editSecAdminPass}
+                              onChange={(e) => setEditSecAdminPass(e.target.value)}
+                              className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 rounded-xl text-xs text-white"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-white/50 block">Max Failed Access Block Attempts</label>
+                            <input 
+                              type="number" 
+                              value={editSecMaxAttempts}
+                              onChange={(e) => setEditSecMaxAttempts(parseInt(e.target.value) || 5)}
+                              className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 rounded-xl text-xs text-white"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-white/50 block">Session Expiration Token Lifetime (Minutes)</label>
+                            <input 
+                              type="number" 
+                              value={editSecSessionTimeout}
+                              onChange={(e) => setEditSecSessionTimeout(parseInt(e.target.value) || 30)}
+                              className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 rounded-xl text-xs text-white"
+                            />
+                          </div>
+                          <div className="flex items-center justify-between p-3 bg-white/2 rounded-xl border border-white/5 self-end h-[42px]">
+                            <div className="space-y-0.5">
+                              <span className="text-xs font-bold text-white">MFA Governance</span>
+                            </div>
+                            <input 
+                              type="checkbox" 
+                              checked={editSecMultiFactor}
+                              onChange={(e) => setEditSecMultiFactor(e.target.checked)}
+                              className="w-4 h-4 rounded text-indigo-600 focus:ring-0"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="border-t border-white/5 pt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <button
+                            type="submit"
+                            className="py-2.5 px-4 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition-all cursor-pointer active:scale-[0.98]"
+                          >
+                            Update Security Policies
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={handleAdminForceLogoutAll}
+                            className="py-2.5 px-4 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-xl transition-all cursor-pointer active:scale-[0.98]"
+                          >
+                            Revoke ALL Active User Sessions
+                          </button>
+                        </div>
+                      </form>
+                    )}
+
+                    {/* Tab 6: ANNOUNCEMENTS / NOTIFICATIONS */}
+                    {adminActiveTab === 'notifications' && (
+                      <form 
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          handleAdminSendNotification({
+                            title: notifTitle,
+                            message: notifMessage,
+                            type: notifType,
+                            recipientType: notifRecipientType,
+                            selectedUsers: notifSelectedUsers
+                          });
+                          setNotifTitle('');
+                          setNotifMessage('');
+                        }}
+                        className="bg-[#14141A] border border-white/5 p-6 rounded-xl space-y-4 text-left"
+                      >
+                        <div className="flex items-center gap-2 border-b border-white/5 pb-2">
+                          <Bell className="w-4 h-4 text-indigo-400" />
+                          <h4 className="text-xs font-black text-white uppercase tracking-wider">Send Universal Broadcast Alert Notification</h4>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-white/50 block">Alert Banner Headline Title</label>
+                            <input 
+                              type="text" 
+                              required
+                              value={notifTitle}
+                              onChange={(e) => setNotifTitle(e.target.value)}
+                              className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 rounded-xl text-xs text-white focus:outline-none focus:border-indigo-500"
+                              placeholder="e.g. Server Upgrade Scheduled"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-white/50 block">Notice visual variant</label>
+                            <select 
+                              value={notifType}
+                              onChange={(e: any) => setNotifType(e.target.value)}
+                              className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 rounded-xl text-xs text-white"
+                            >
+                              <option value="info">Information (Blue)</option>
+                              <option value="success">Success Notice (Green)</option>
+                              <option value="warning">System Warning (Amber)</option>
+                              <option value="danger">High Severity Danger (Red)</option>
+                            </select>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-white/50 block">Recipient Classification</label>
+                            <select 
+                              value={notifRecipientType}
+                              onChange={(e: any) => setNotifRecipientType(e.target.value)}
+                              className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 rounded-xl text-xs text-white"
+                            >
+                              <option value="all">Every Connected Account (All)</option>
+                              <option value="users">Standard Users Only</option>
+                              <option value="admins">System Admins Only</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-white/50 block">Detailed Broadcast Message Text</label>
+                          <textarea 
+                            required
+                            value={notifMessage}
+                            onChange={(e) => setNotifMessage(e.target.value)}
+                            rows={3}
+                            className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 rounded-xl text-xs text-white focus:outline-none focus:border-indigo-500"
+                            placeholder="Add notification paragraph details here..."
+                          />
+                        </div>
+
+                        <div className="pt-2">
+                          <button
+                            type="submit"
+                            className="py-2.5 px-5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition-all cursor-pointer active:scale-[0.98]"
+                          >
+                            Dispatch Global Alert Notice
+                          </button>
+                        </div>
+                      </form>
+                    )}
+
+                    {/* Tab 7: SECURITY AUDIT TRAILS */}
+                    {adminActiveTab === 'audit' && (
+                      <div className="space-y-3">
+                        <div className="border border-white/5 rounded-xl overflow-hidden bg-[#14141A]">
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left border-collapse">
+                              <thead>
+                                <tr className="bg-white/2 border-b border-white/5 text-[10px] uppercase tracking-wider text-white/40">
+                                  <th className="px-4 py-3 font-bold">System Timestamp</th>
+                                  <th className="px-4 py-3 font-bold">Security Operation Action</th>
+                                  <th className="px-4 py-3 font-bold">Details & Log State</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-white/5 text-[11px] text-white/70 font-mono">
+                                {adminAuditLogs.length === 0 ? (
+                                  <tr>
+                                    <td colSpan={3} className="px-4 py-8 text-center font-sans text-white/30">
+                                      No security operations audited in this period.
+                                    </td>
+                                  </tr>
+                                ) : (
+                                  adminAuditLogs.map((log: any, idx: number) => {
+                                    let timeStr = 'Invalid Date';
+                                    if (log.timestamp) {
+                                      const date = log.timestamp.seconds ? new Date(log.timestamp.seconds * 1000) : new Date(log.timestamp);
+                                      timeStr = date.toLocaleString();
+                                    }
+                                    return (
+                                      <tr key={log.id || idx} className="hover:bg-white/2 transition-all">
+                                        <td className="px-4 py-3 text-white/40">{timeStr}</td>
+                                        <td className="px-4 py-3 text-indigo-400 font-bold uppercase tracking-wide">
+                                          {log.action || 'OPERATION'}
+                                        </td>
+                                        <td className="px-4 py-3 text-white/75 font-sans leading-relaxed">
+                                          <div className="font-bold font-sans text-white">
+                                            {log.details || 'Executed administrative action'}
+                                          </div>
+                                          {log.email && (
+                                            <div className="text-[10px] text-white/40 mt-0.5">
+                                              Triggered by: {log.email}
+                                            </div>
+                                          )}
+                                        </td>
+                                      </tr>
+                                    );
+                                  })
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
                         </div>
                       </div>
                     )}
@@ -3754,147 +4893,7 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Smooth Premium User Auth Modal */}
-      <AnimatePresence>
-        {isAuthModalOpen && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md"
-          >
-            <motion.div
-              initial={{ scale: 0.95, y: 15 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.95, y: 15 }}
-              className="w-full max-w-md bg-[#0F0F13] border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden"
-            >
-              {/* Header */}
-              <div className="border-b border-white/5 bg-[#14141A] px-6 py-4 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <UserIcon className="w-5 h-5 text-indigo-400" />
-                  <div>
-                    <h3 className="text-sm font-bold text-white">
-                      {isSignUpMode ? 'Create Your Account' : 'Welcome Back'}
-                    </h3>
-                    <p className="text-[10px] text-white/40">
-                      {isSignUpMode ? 'Sign up to transcribe and sync captions' : 'Sign in to access your free captions'}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setIsAuthModalOpen(false)}
-                  className="p-1.5 hover:bg-white/5 rounded-lg text-white/40 hover:text-white transition-all cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
 
-              {/* Form Body */}
-              <div className="p-6 space-y-4">
-                {authModalError && (
-                  <div className="p-3 bg-red-500/10 border border-red-500/20 text-red-400 text-xs rounded-xl flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4 shrink-0" />
-                    <span>{authModalError}</span>
-                  </div>
-                )}
-
-                {/* Google Sign In (Primary & Smooth) */}
-                <button
-                  type="button"
-                  onClick={handleGoogleLogin}
-                  className="w-full py-2.5 px-4 bg-[#1A1A24] hover:bg-[#232331] border border-white/10 hover:border-white/20 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]"
-                >
-                  {/* Styled minimalist Google icon */}
-                  <svg className="w-4 h-4" viewBox="0 0 24 24" width="16" height="16">
-                    <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v3.92h6.61a5.66 5.66 0 0 1-2.45 3.71v3.08h3.95a12 12 0 0 0 3.63-8.64z"/>
-                    <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.95-3.08c-1.1.74-2.5 1.18-3.98 1.18-3.07 0-5.67-2.08-6.6-4.88H1.35v3.18A12 12 0 0 0 12 24z"/>
-                    <path fill="#FBBC05" d="M5.4 14.31A7.16 7.16 0 0 1 5 12c0-.8.14-1.58.4-2.31V6.51H1.35A11.94 11.94 0 0 0 0 12c0 2.05.52 4 1.35 5.49l4.05-3.18z"/>
-                    <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.43-3.43A11.93 11.93 0 0 0 12 0 12 12 0 0 0 1.35 6.51l4.05 3.18c.93-2.8 3.53-4.88 6.6-4.88z"/>
-                  </svg>
-                  <span>Continue with Google</span>
-                </button>
-
-                {/* Divider */}
-                <div className="flex items-center gap-3 my-3">
-                  <div className="h-px bg-white/5 flex-1" />
-                  <span className="text-[10px] text-white/30 uppercase font-semibold tracking-wider">or email</span>
-                  <div className="h-px bg-white/5 flex-1" />
-                </div>
-
-                {/* Email / Password Form */}
-                <form onSubmit={handleEmailAuth} className="space-y-3.5">
-                  {isSignUpMode && (
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold text-white/55 block">DISPLAY NAME</label>
-                      <input
-                        type="text"
-                        placeholder="Your full name"
-                        value={authDisplayName}
-                        onChange={(e) => setAuthDisplayName(e.target.value)}
-                        className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 rounded-xl text-xs text-white placeholder-white/20 focus:outline-none focus:border-indigo-500 transition-all"
-                      />
-                    </div>
-                  )}
-
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-white/55 block">EMAIL ADDRESS</label>
-                    <input
-                      type="email"
-                      required
-                      placeholder="name@example.com"
-                      value={authEmail}
-                      onChange={(e) => setAuthEmail(e.target.value)}
-                      className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 rounded-xl text-xs text-white placeholder-white/20 focus:outline-none focus:border-indigo-500 transition-all"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-white/55 block">PASSWORD</label>
-                    <input
-                      type="password"
-                      required
-                      placeholder="••••••••"
-                      value={authPassword}
-                      onChange={(e) => setAuthPassword(e.target.value)}
-                      className="w-full px-4 py-2.5 bg-[#1A1A24] border border-white/10 rounded-xl text-xs text-white placeholder-white/20 focus:outline-none focus:border-indigo-500 transition-all"
-                    />
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={isSubmittingAuth}
-                    className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed mt-2"
-                  >
-                    {isSubmittingAuth ? (
-                      <div className="w-4 h-4 rounded-full border-2 border-white/20 border-t-white animate-spin"></div>
-                    ) : (
-                      <span>{isSignUpMode ? 'Create Free Account' : 'Sign In'}</span>
-                    )}
-                  </button>
-                </form>
-
-                {/* Mode Toggle Footer */}
-                <div className="text-center pt-2">
-                  <p className="text-xs text-white/40 font-sans">
-                    {isSignUpMode ? 'Already have an account?' : 'New to RiddimRoom Captions?'}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsSignUpMode(!isSignUpMode);
-                        setAuthModalError(null);
-                      }}
-                      className="text-indigo-400 hover:text-indigo-300 ml-1.5 font-bold focus:outline-none cursor-pointer"
-                    >
-                      {isSignUpMode ? 'Sign In' : 'Create Account'}
-                    </button>
-                  </p>
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* Upload trigger logic element */}
       <input

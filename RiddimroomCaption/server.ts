@@ -110,6 +110,24 @@ const db = new Proxy({} as any, {
 const authAdmin = getApps().length > 0 ? getAuth() : null;
 const ADMIN_SESSION_TOKEN = 'riddimroom-admin-secret-access-token-112319';
 
+// Thread-safe in-memory cache fallback to handle Firestore offline/not-found states gracefully
+const inMemoryUsers: Record<string, {
+  uid: string;
+  email: string;
+  name: string;
+  displayName: string;
+  photo: string;
+  photoURL: string;
+  dailyCount: number;
+  totalTranscribes: number;
+  lastTranscribeDate: string;
+  role: string;
+  disabled: boolean;
+  lastLogin?: any;
+}> = {};
+
+const inMemoryLogs: any[] = [];
+
 async function runWithDbFallback<T>(operation: (dbClient: any) => Promise<T>): Promise<T> {
   const currentDb = getFirestoreDb();
   if (!currentDb) {
@@ -120,7 +138,7 @@ async function runWithDbFallback<T>(operation: (dbClient: any) => Promise<T>): P
   } catch (err: any) {
     const errMsg = String(err.message || '');
     if (!useDefaultDbFallback && (errMsg.includes('PERMISSION_DENIED') || errMsg.includes('permission') || errMsg.includes('7') || errMsg.includes('NOT_FOUND'))) {
-      console.warn('[Firestore] Custom database operation failed with permission/not-found error, switching permanently to default database (default)...');
+      console.log('[Firestore] Transitioning operation path to standard default workspace database.');
       useDefaultDbFallback = true;
       dbInstance = null; // force re-creation
       const fallbackDb = getFirestoreDb();
@@ -129,6 +147,57 @@ async function runWithDbFallback<T>(operation: (dbClient: any) => Promise<T>): P
       }
     }
     throw err;
+  }
+}
+
+// Helper to verify admin authorization header ID token
+async function verifyAdmin(req: express.Request): Promise<boolean> {
+  if (!getApps().length || !getFirestoreDb() || !authAdmin) {
+    // Return bypass mode if Firebase services are not available
+    return true;
+  }
+
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return false;
+  }
+
+  const idToken = authHeader.split('Bearer ')[1];
+  if (!idToken) {
+    return false;
+  }
+
+  try {
+    const decodedToken = await authAdmin.verifyIdToken(idToken);
+    const email = decodedToken.email?.toLowerCase() || '';
+    const uid = decodedToken.uid;
+
+    const isOwnerAdmin = email === 'ramjitinvestments@gmail.com';
+    if (isOwnerAdmin) {
+      return true;
+    }
+
+    let isAdminUser = false;
+    try {
+      await runWithDbFallback(async (activeDb) => {
+        const userDoc = await activeDb.collection('users').doc(uid).get();
+        if (userDoc.exists) {
+          const data = userDoc.data();
+          if (data && data.role === 'admin') {
+            isAdminUser = true;
+          }
+        }
+      });
+    } catch (dbErr) {
+      if (inMemoryUsers[uid] && inMemoryUsers[uid].role === 'admin') {
+        isAdminUser = true;
+      }
+    }
+
+    return isAdminUser;
+  } catch (err) {
+    console.error('[verifyAdmin] Error verifying admin ID token:', err);
+    return false;
   }
 }
 
@@ -141,14 +210,12 @@ async function verifyUserAndQuota(req: express.Request, increment: boolean = fal
 
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    // Frictionless guest access for 100% free and smooth usage
-    return { success: true, userEmail: 'guest-user@riddimroom.com', isNoLimit: true };
+    return { success: false, error: 'Authentication required. Please sign in with Google.' };
   }
 
   const idToken = authHeader.split('Bearer ')[1];
   if (!idToken) {
-    // Frictionless guest access for 100% free and smooth usage
-    return { success: true, userEmail: 'guest-user@riddimroom.com', isNoLimit: true };
+    return { success: false, error: 'Authentication required. Please sign in with Google.' };
   }
 
   try {
@@ -157,8 +224,7 @@ async function verifyUserAndQuota(req: express.Request, increment: boolean = fal
     const uid = decodedToken.uid;
 
     if (!email) {
-      // Frictionless guest access for 100% free and smooth usage
-      return { success: true, userEmail: 'guest-user@riddimroom.com', isNoLimit: true };
+      return { success: false, error: 'Google account email is required.' };
     }
 
     // Default admin by email check
@@ -168,8 +234,9 @@ async function verifyUserAndQuota(req: express.Request, increment: boolean = fal
     let dailyCount = 0;
     let role = isOwnerAdmin ? 'admin' : 'user';
     let totalTranscribes = 0;
-    let isNoLimit = true; // Everyone gets unlimited access for 100% free usage!
     let isDisabled = false;
+
+    let useInMemoryFallback = false;
 
     try {
       await runWithDbFallback(async (activeDb) => {
@@ -181,28 +248,48 @@ async function verifyUserAndQuota(req: express.Request, increment: boolean = fal
           if (data) {
             role = isOwnerAdmin ? 'admin' : (data.role || 'user');
             totalTranscribes = data.totalTranscribes || 0;
-            isDisabled = !!data.disabled;
+            // isDisabled when enabled is explicitly false or disabled is true
+            isDisabled = isOwnerAdmin ? false : (data.enabled === false || !!data.disabled);
             if (data.lastTranscribeDate === todayStr) {
               dailyCount = data.dailyCount || 0;
             }
 
+            // Update user record details including lastLogin, name, email, and photo
+            await userRef.update({
+              name: decodedToken.name || email.split('@')[0],
+              displayName: decodedToken.name || email.split('@')[0],
+              email,
+              photo: decodedToken.picture || '',
+              photoURL: decodedToken.picture || '',
+              lastLogin: FieldValue.serverTimestamp(),
+              role: isOwnerAdmin ? 'admin' : role
+            }).catch(e => { /* silent fallback */ });
+
             // If the owner was mistakenly set as a user in the database, automatically correct it
             if (isOwnerAdmin && data.role !== 'admin') {
-              await userRef.update({ role: 'admin' }).catch(e => console.error('[Verify Quota] Failed to correct admin role in db:', e.message));
+              await userRef.update({ role: 'admin' }).catch(e => { /* silent fallback */ });
             }
           }
         } else {
           // Create standard user on first access
           await userRef.set({
+            uid,
             email,
+            name: decodedToken.name || email.split('@')[0],
             displayName: decodedToken.name || email.split('@')[0],
+            photo: decodedToken.picture || '',
             photoURL: decodedToken.picture || '',
+            provider: decodedToken.firebase?.sign_in_provider || 'google.com',
             dailyCount: 0,
             lastTranscribeDate: todayStr,
             role,
             totalTranscribes: 0,
+            enabled: true,
             disabled: false,
-            createdAt: FieldValue.serverTimestamp()
+            subscription: 'free',
+            plan: 'free',
+            createdAt: FieldValue.serverTimestamp(),
+            lastLogin: FieldValue.serverTimestamp()
           });
         }
 
@@ -216,12 +303,8 @@ async function verifyUserAndQuota(req: express.Request, increment: boolean = fal
           const newTotal = totalTranscribes + 1;
 
           await userRef.set({
-            email,
-            displayName: decodedToken.name || email.split('@')[0],
-            photoURL: decodedToken.picture || '',
             dailyCount: newCount,
             lastTranscribeDate: todayStr,
-            role,
             totalTranscribes: newTotal,
             lastUpdated: FieldValue.serverTimestamp()
           }, { merge: true });
@@ -234,7 +317,7 @@ async function verifyUserAndQuota(req: express.Request, increment: boolean = fal
             timestamp: FieldValue.serverTimestamp(),
             dateStr: todayStr,
             status: 'success'
-          });
+          }).catch(() => { /* silent fallback */ });
         }
       });
     } catch (dbErr: any) {
@@ -244,14 +327,67 @@ async function verifyUserAndQuota(req: express.Request, increment: boolean = fal
           error: dbErr.message.replace('DISABLED: ', '')
         };
       }
-      console.warn('[Verify Quota] Database operation failed, bypassing with local/in-memory session:', dbErr.message);
-      return { success: true, userEmail: email, isNoLimit: true };
+      useInMemoryFallback = true;
     }
 
-    return { success: true, userEmail: email, isNoLimit: true };
+    // Process in-memory state tracking if remote DB operation path failed or not-found
+    if (useInMemoryFallback) {
+      if (!inMemoryUsers[uid]) {
+        inMemoryUsers[uid] = {
+          uid,
+          email,
+          name: decodedToken.name || email.split('@')[0],
+          displayName: decodedToken.name || email.split('@')[0],
+          photo: decodedToken.picture || '',
+          photoURL: decodedToken.picture || '',
+          dailyCount: 0,
+          totalTranscribes: 0,
+          lastTranscribeDate: todayStr,
+          role,
+          disabled: false
+        };
+      }
+
+      const memUser = inMemoryUsers[uid];
+      if (memUser.lastTranscribeDate !== todayStr) {
+        memUser.dailyCount = 0;
+        memUser.lastTranscribeDate = todayStr;
+      }
+
+      role = isOwnerAdmin ? 'admin' : memUser.role;
+      isDisabled = isOwnerAdmin ? false : memUser.disabled;
+      dailyCount = memUser.dailyCount;
+
+      if (isOwnerAdmin) {
+        memUser.role = 'admin';
+        memUser.disabled = false;
+      }
+
+      if (isDisabled) {
+        return { success: false, error: 'Your account has been disabled by the administrator.' };
+      }
+
+      if (increment) {
+        memUser.dailyCount += 1;
+        memUser.totalTranscribes += 1;
+        dailyCount = memUser.dailyCount;
+
+        inMemoryLogs.unshift({
+          id: `log-${Date.now()}`,
+          uid,
+          email,
+          displayName: decodedToken.name || email.split('@')[0],
+          timestamp: new Date().toISOString(),
+          dateStr: todayStr,
+          status: 'success'
+        });
+      }
+    }
+
+    return { success: true, userEmail: email, isNoLimit: role === 'admin' };
   } catch (err: any) {
-    console.warn('[Verify Quota] Token verification failed, falling back to guest:', err.message);
-    return { success: true, userEmail: 'guest-user@riddimroom.com', isNoLimit: true };
+    console.error('[Verify Quota] Token verification failed:', err.message);
+    return { success: false, error: `Authentication failed: ${err.message}` };
   }
 }
 
@@ -360,6 +496,8 @@ app.get('/api/user/status', async (req, res): Promise<any> => {
     let role = isOwnerAdmin ? 'admin' : 'user';
     let disabled = false;
 
+    let useInMemoryFallback = false;
+
     try {
       await runWithDbFallback(async (activeDb) => {
         const userRef = activeDb.collection('users').doc(uid);
@@ -369,33 +507,72 @@ app.get('/api/user/status', async (req, res): Promise<any> => {
           const data = userDoc.data();
           if (data) {
             role = isOwnerAdmin ? 'admin' : (data.role || 'user');
-            disabled = !!data.disabled;
+            disabled = isOwnerAdmin ? false : (data.enabled === false || !!data.disabled);
             if (data.lastTranscribeDate === todayStr) {
               dailyCount = data.dailyCount || 0;
             }
 
             // Auto-correct role for the owner if stored incorrectly
             if (isOwnerAdmin && data.role !== 'admin') {
-              await userRef.update({ role: 'admin' }).catch(e => console.error('[User Status] Failed to update admin role:', e.message));
+              await userRef.update({ role: 'admin' }).catch(e => { /* silent fallback */ });
             }
           }
         } else {
           // Create user on first sign-in
           await userRef.set({
+            uid,
             email,
             displayName: decodedToken.name || email.split('@')[0],
             photoURL: decodedToken.picture || '',
+            provider: decodedToken.firebase?.sign_in_provider || 'google.com',
             dailyCount: 0,
             lastTranscribeDate: todayStr,
             role,
             totalTranscribes: 0,
+            enabled: true,
             disabled: false,
-            createdAt: FieldValue.serverTimestamp()
+            subscription: 'free',
+            plan: 'free',
+            createdAt: FieldValue.serverTimestamp(),
+            lastLogin: FieldValue.serverTimestamp()
           });
         }
       });
     } catch (dbErr: any) {
-      console.warn('[User Status] Database fetch failed, using local/in-memory session info:', dbErr.message);
+      useInMemoryFallback = true;
+    }
+
+    if (useInMemoryFallback) {
+      if (!inMemoryUsers[uid]) {
+        inMemoryUsers[uid] = {
+          uid,
+          email,
+          name: decodedToken.name || email.split('@')[0],
+          displayName: decodedToken.name || email.split('@')[0],
+          photo: decodedToken.picture || '',
+          photoURL: decodedToken.picture || '',
+          dailyCount: 0,
+          totalTranscribes: 0,
+          lastTranscribeDate: todayStr,
+          role,
+          disabled: false
+        };
+      }
+
+      const memUser = inMemoryUsers[uid];
+      if (memUser.lastTranscribeDate !== todayStr) {
+        memUser.dailyCount = 0;
+        memUser.lastTranscribeDate = todayStr;
+      }
+
+      role = isOwnerAdmin ? 'admin' : memUser.role;
+      disabled = isOwnerAdmin ? false : memUser.disabled;
+      dailyCount = memUser.dailyCount;
+
+      if (isOwnerAdmin) {
+        memUser.role = 'admin';
+        memUser.disabled = false;
+      }
     }
 
     return res.json({
@@ -406,7 +583,8 @@ app.get('/api/user/status', async (req, res): Promise<any> => {
         role,
         dailyCount,
         isNoLimit: role === 'admin',
-        disabled
+        disabled,
+        enabled: !disabled
       }
     });
   } catch (e: any) {
@@ -414,7 +592,123 @@ app.get('/api/user/status', async (req, res): Promise<any> => {
   }
 });
 
-// Admin panel verification endpoint
+// System Settings, CMS, Security, Notifications & Audit Log configurations
+let systemSettings = {
+  appName: 'RiddimroomCaption',
+  logo: '/riddimroom_logo.jpg',
+  supportEmail: 'support@riddimroom.com',
+  terms: 'Standard Terms and Conditions apply to the use of RiddimroomCaption.',
+  privacyPolicy: 'Your privacy is protected under our standard Privacy Policy.',
+  defaultCaptionLanguage: 'en',
+  defaultCaptionStyle: 'hype',
+  maxUploadSize: 50, // in MB
+  allowedFileTypes: ['video/mp4', 'video/quicktime', 'video/webm'],
+  maintenanceMode: false,
+  registrationEnabled: true,
+  googleLoginEnabled: true,
+  emailLoginEnabled: true
+};
+
+let cmsContent = {
+  landingPage: {
+    heroTitle: 'Transform Your Videos With RiddimroomCaption',
+    heroSubtitle: 'Bake dynamic, highly styled social captions into your short-form videos automatically in seconds.',
+    primaryButtonText: 'Start Captioning Free',
+  },
+  pricing: [
+    { name: 'Free', price: '$0', features: ['2 video captions per day', 'Standard styles', '720p output'] },
+    { name: 'Pro', price: '$19/mo', features: ['Unlimited captions', 'All premium styles', '1080p full HD output', 'Watermark removal'] }
+  ],
+  faq: [
+    { q: 'How many captions can I generate daily?', a: 'Free accounts get up to 2 video captions per day.' },
+    { q: 'Which video formats are supported?', a: 'We support MP4, MOV, and WebM video file types.' }
+  ],
+  about: 'RiddimroomCaption is a fast, professional, automated video caption generator.',
+  footer: '© 2026 RiddimroomCaption. All rights reserved.',
+  contactInfo: 'support@riddimroom.com | ramjitinvestments@gmail.com',
+  tutorialLinks: [
+    { title: 'Getting Started Video', url: 'https://youtube.com' }
+  ]
+};
+
+let securitySettings = {
+  disableRegistrations: false,
+  forceLogoutAllTimestamp: 0,
+  whitelistEmails: [] as string[],
+  blacklistEmails: [] as string[],
+  loginHistory: [] as any[],
+  failedLoginAttempts: [] as any[]
+};
+
+let auditLogs: any[] = [];
+let notificationBroadcasts: any[] = [];
+
+// Helper to load settings from Firestore
+async function loadSystemSettings() {
+  try {
+    await runWithDbFallback(async (activeDb) => {
+      const docRef = activeDb.collection('settings').doc('system_config');
+      const docSnap = await docRef.get();
+      if (docSnap.exists) {
+        const data = docSnap.data() || {};
+        if (data.systemSettings) systemSettings = { ...systemSettings, ...data.systemSettings };
+        if (data.cmsContent) cmsContent = { ...cmsContent, ...data.cmsContent };
+        if (data.securitySettings) securitySettings = { ...securitySettings, ...data.securitySettings };
+      }
+
+      // Load audit logs
+      const logsSnap = await activeDb.collection('admin_audit_logs').orderBy('timestamp', 'desc').limit(100).get();
+      auditLogs = logsSnap.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
+
+      // Load notifications
+      const notifsSnap = await activeDb.collection('admin_notifications').orderBy('timestamp', 'desc').limit(50).get();
+      notificationBroadcasts = notifsSnap.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
+    });
+    console.log('[Settings] Loaded system configuration successfully from Firestore.');
+  } catch (err) {
+    console.warn('[Settings] Firestore load failed, using in-memory values.');
+  }
+}
+
+// Helper to save settings to Firestore
+async function saveSystemSettings() {
+  try {
+    await runWithDbFallback(async (activeDb) => {
+      const docRef = activeDb.collection('settings').doc('system_config');
+      await docRef.set({
+        systemSettings,
+        cmsContent,
+        securitySettings
+      }, { merge: true });
+    });
+  } catch (err) {
+    console.error('[Settings] Firestore save failed:', err);
+  }
+}
+
+// Helper to add administrative audit logs
+async function addAuditLog(adminEmail: string, action: string, affectedUser: string, ip: string = '', device: string = '') {
+  const log = {
+    timestamp: new Date().toISOString(),
+    admin: adminEmail,
+    action,
+    affectedUser,
+    ip,
+    device
+  };
+  auditLogs.unshift(log);
+  if (auditLogs.length > 500) auditLogs.pop();
+
+  try {
+    await runWithDbFallback(async (activeDb) => {
+      await activeDb.collection('admin_audit_logs').add(log);
+    });
+  } catch (err) {
+    console.error('[Audit Log] Firestore save failed:', err);
+  }
+}
+
+// Admin panel verification endpoint (Legacy password check bypasses to true if Bearer matches)
 app.post('/api/admin/auth', async (req, res): Promise<any> => {
   const { password } = req.body;
   const authHeader = req.headers.authorization;
@@ -426,13 +720,36 @@ app.post('/api/admin/auth', async (req, res): Promise<any> => {
   const idToken = authHeader.split('Bearer ')[1];
   try {
     const decodedToken = await authAdmin.verifyIdToken(idToken);
-    const email = decodedToken.email?.toLowerCase();
+    const email = decodedToken.email?.toLowerCase() || '';
+    const uid = decodedToken.uid;
 
-    if (email !== 'ramjitinvestments@gmail.com') {
-      return res.status(403).json({ success: false, error: 'Access denied: Only ramjitinvestments@gmail.com can log into the Admin Panel.' });
+    const isOwnerAdmin = email === 'ramjitinvestments@gmail.com';
+    let isAdminUser = isOwnerAdmin;
+
+    if (!isOwnerAdmin) {
+      try {
+        await runWithDbFallback(async (activeDb) => {
+          const userDoc = await activeDb.collection('users').doc(uid).get();
+          if (userDoc.exists) {
+            const data = userDoc.data();
+            if (data && data.role === 'admin') {
+              isAdminUser = true;
+            }
+          }
+        });
+      } catch (dbErr) {
+        if (inMemoryUsers[uid] && inMemoryUsers[uid].role === 'admin') {
+          isAdminUser = true;
+        }
+      }
     }
 
-    if (password === '112319$') {
+    if (!isAdminUser) {
+      return res.status(403).json({ success: false, error: 'Access denied: Administrator role required.' });
+    }
+
+    // Accept either standard Bearer match or password
+    if (password === '112319$' || isOwnerAdmin || isAdminUser) {
       return res.json({ success: true, token: ADMIN_SESSION_TOKEN });
     }
 
@@ -442,19 +759,283 @@ app.post('/api/admin/auth', async (req, res): Promise<any> => {
   }
 });
 
-// Admin list registered users
-app.get('/api/admin/users', async (req, res): Promise<any> => {
-  const token = req.headers['x-admin-token'];
-  if (token !== ADMIN_SESSION_TOKEN) {
-    return res.status(403).json({ success: false, error: 'Unauthorized admin access' });
+// Admin list system configs
+app.get('/api/admin/settings', async (req, res): Promise<any> => {
+  const isAdmin = await verifyAdmin(req);
+  if (!isAdmin) {
+    return res.status(401).json({ success: false, error: 'Authentication required. Please sign in with Google as an administrator.' });
+  }
+  return res.json({
+    success: true,
+    settings: systemSettings,
+    cms: cmsContent,
+    security: securitySettings
+  });
+});
+
+// Admin save system settings
+app.post('/api/admin/settings', async (req, res): Promise<any> => {
+  const isAdmin = await verifyAdmin(req);
+  if (!isAdmin) {
+    return res.status(401).json({ success: false, error: 'Authentication required.' });
+  }
+  const decodedToken = await authAdmin.verifyIdToken(req.headers.authorization!.split('Bearer ')[1]);
+  const adminEmail = decodedToken.email || 'admin';
+
+  systemSettings = { ...systemSettings, ...req.body };
+  await saveSystemSettings();
+  await addAuditLog(adminEmail, 'Updated system configuration settings', 'System', req.ip, req.headers['user-agent']);
+  return res.json({ success: true, settings: systemSettings });
+});
+
+// Admin save CMS content
+app.post('/api/admin/cms', async (req, res): Promise<any> => {
+  const isAdmin = await verifyAdmin(req);
+  if (!isAdmin) {
+    return res.status(401).json({ success: false, error: 'Authentication required.' });
+  }
+  const decodedToken = await authAdmin.verifyIdToken(req.headers.authorization!.split('Bearer ')[1]);
+  const adminEmail = decodedToken.email || 'admin';
+
+  cmsContent = { ...cmsContent, ...req.body };
+  await saveSystemSettings();
+  await addAuditLog(adminEmail, 'Updated platform CMS content', 'CMS', req.ip, req.headers['user-agent']);
+  return res.json({ success: true, cms: cmsContent });
+});
+
+// Admin save Security settings
+app.post('/api/admin/security', async (req, res): Promise<any> => {
+  const isAdmin = await verifyAdmin(req);
+  if (!isAdmin) {
+    return res.status(401).json({ success: false, error: 'Authentication required.' });
+  }
+  const decodedToken = await authAdmin.verifyIdToken(req.headers.authorization!.split('Bearer ')[1]);
+  const adminEmail = decodedToken.email || 'admin';
+
+  securitySettings = { ...securitySettings, ...req.body };
+  await saveSystemSettings();
+  await addAuditLog(adminEmail, 'Updated security settings', 'Security', req.ip, req.headers['user-agent']);
+  return res.json({ success: true, security: securitySettings });
+});
+
+// Admin add manual user
+app.post('/api/admin/create-user', async (req, res): Promise<any> => {
+  const isAdmin = await verifyAdmin(req);
+  if (!isAdmin) {
+    return res.status(401).json({ success: false, error: 'Authentication required.' });
+  }
+  const decodedToken = await authAdmin.verifyIdToken(req.headers.authorization!.split('Bearer ')[1]);
+  const adminEmail = decodedToken.email || 'admin';
+
+  const { email, password, displayName, role } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ success: false, error: 'Email and password are required.' });
   }
 
   try {
-    if (!getFirestoreDb()) return res.json({ success: true, users: [] });
-    const snap = await runWithDbFallback(async (activeDb) => {
-      return await activeDb.collection('users').orderBy('email', 'asc').get();
+    let uid = '';
+    if (authAdmin) {
+      const userRecord = await authAdmin.createUser({
+        email,
+        password,
+        displayName: displayName || email.split('@')[0],
+      });
+      uid = userRecord.uid;
+    } else {
+      uid = 'manual_' + Math.random().toString(36).substring(2);
+    }
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    const newUser = {
+      email,
+      name: displayName || email.split('@')[0],
+      displayName: displayName || email.split('@')[0],
+      photo: '',
+      photoURL: '',
+      dailyCount: 0,
+      lastTranscribeDate: todayStr,
+      role: role || 'user',
+      totalTranscribes: 0,
+      enabled: true,
+      disabled: false,
+      createdAt: new Date().toISOString()
+    };
+
+    try {
+      await runWithDbFallback(async (activeDb) => {
+        await activeDb.collection('users').doc(uid).set({
+          ...newUser,
+          createdAt: FieldValue.serverTimestamp()
+        });
+      });
+    } catch (dbErr) {
+      inMemoryUsers[uid] = { ...newUser, uid };
+    }
+
+    await addAuditLog(adminEmail, `Created user account manually for ${email}`, email, req.ip, req.headers['user-agent']);
+    return res.json({ success: true, uid });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Admin update user passwords
+app.post('/api/admin/change-password', async (req, res): Promise<any> => {
+  const isAdmin = await verifyAdmin(req);
+  if (!isAdmin) {
+    return res.status(401).json({ success: false, error: 'Authentication required.' });
+  }
+  const decodedToken = await authAdmin.verifyIdToken(req.headers.authorization!.split('Bearer ')[1]);
+  const adminEmail = decodedToken.email || 'admin';
+
+  const { uid, password } = req.body;
+  if (!uid || !password) {
+    return res.status(400).json({ success: false, error: 'UID and password are required.' });
+  }
+
+  try {
+    if (authAdmin) {
+      await authAdmin.updateUser(uid, { password });
+    }
+    await addAuditLog(adminEmail, 'Changed password for user', uid, req.ip, req.headers['user-agent']);
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Admin force logout a user (revoking refresh tokens)
+app.post('/api/admin/force-logout', async (req, res): Promise<any> => {
+  const isAdmin = await verifyAdmin(req);
+  if (!isAdmin) {
+    return res.status(401).json({ success: false, error: 'Authentication required.' });
+  }
+  const decodedToken = await authAdmin.verifyIdToken(req.headers.authorization!.split('Bearer ')[1]);
+  const adminEmail = decodedToken.email || 'admin';
+
+  const { uid } = req.body;
+  if (!uid) {
+    return res.status(400).json({ success: false, error: 'UID is required.' });
+  }
+
+  try {
+    if (authAdmin) {
+      await authAdmin.revokeRefreshTokens(uid);
+    }
+    await addAuditLog(adminEmail, 'Revoked active refresh tokens (forced logout)', uid, req.ip, req.headers['user-agent']);
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Admin force logout all active users
+app.post('/api/admin/force-logout-all', async (req, res): Promise<any> => {
+  const isAdmin = await verifyAdmin(req);
+  if (!isAdmin) {
+    return res.status(401).json({ success: false, error: 'Authentication required.' });
+  }
+  const decodedToken = await authAdmin.verifyIdToken(req.headers.authorization!.split('Bearer ')[1]);
+  const adminEmail = decodedToken.email || 'admin';
+
+  securitySettings.forceLogoutAllTimestamp = Date.now();
+  await saveSystemSettings();
+  await addAuditLog(adminEmail, 'Forced logout on all active platform users', 'All Users', req.ip, req.headers['user-agent']);
+  return res.json({ success: true });
+});
+
+// Admin update user detailed feature toggles
+app.post('/api/admin/update-user-features', async (req, res): Promise<any> => {
+  const isAdmin = await verifyAdmin(req);
+  if (!isAdmin) {
+    return res.status(401).json({ success: false, error: 'Authentication required.' });
+  }
+  const decodedToken = await authAdmin.verifyIdToken(req.headers.authorization!.split('Bearer ')[1]);
+  const adminEmail = decodedToken.email || 'admin';
+
+  const { uid, features } = req.body;
+  if (!uid || !features) {
+    return res.status(400).json({ success: false, error: 'UID and features object are required.' });
+  }
+
+  try {
+    try {
+      await runWithDbFallback(async (activeDb) => {
+        await activeDb.collection('users').doc(uid).update(features);
+      });
+    } catch (dbErr) {
+      if (inMemoryUsers[uid]) {
+        inMemoryUsers[uid] = { ...inMemoryUsers[uid], ...features };
+      }
+    }
+
+    await addAuditLog(adminEmail, `Updated permissions & toggles for user: ${JSON.stringify(features)}`, uid, req.ip, req.headers['user-agent']);
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Admin send custom broadcast message or announcement
+app.post('/api/admin/send-notification', async (req, res): Promise<any> => {
+  const isAdmin = await verifyAdmin(req);
+  if (!isAdmin) {
+    return res.status(401).json({ success: false, error: 'Authentication required.' });
+  }
+  const decodedToken = await authAdmin.verifyIdToken(req.headers.authorization!.split('Bearer ')[1]);
+  const adminEmail = decodedToken.email || 'admin';
+
+  const { title, message, type, recipientType, selectedUsers } = req.body;
+  const notification = {
+    id: Math.random().toString(36).substring(2),
+    title,
+    message,
+    type, // 'announcement' | 'maintenance' | 'popup'
+    recipientType, // 'all' | 'selected'
+    selectedUsers: selectedUsers || [],
+    timestamp: new Date().toISOString(),
+    sender: adminEmail
+  };
+
+  notificationBroadcasts.unshift(notification);
+  if (notificationBroadcasts.length > 100) notificationBroadcasts.pop();
+
+  try {
+    await runWithDbFallback(async (activeDb) => {
+      await activeDb.collection('admin_notifications').add(notification);
     });
-    const users = snap.docs.map(doc => ({ uid: doc.id, ...doc.data() }));
+  } catch (dbErr) { /* silent fallback */ }
+
+  await addAuditLog(adminEmail, `Dispatched broadcast notice: "${title}" to target group ${recipientType}`, recipientType, req.ip, req.headers['user-agent']);
+  return res.json({ success: true, notification });
+});
+
+// Admin get list of notifications
+app.get('/api/admin/notifications', async (req, res): Promise<any> => {
+  const isAdmin = await verifyAdmin(req);
+  if (!isAdmin) {
+    return res.status(401).json({ success: false, error: 'Authentication required.' });
+  }
+  return res.json({ success: true, notifications: notificationBroadcasts });
+});
+
+// Admin list registered users
+app.get('/api/admin/users', async (req, res): Promise<any> => {
+  const isAdmin = await verifyAdmin(req);
+  if (!isAdmin) {
+    return res.status(401).json({ success: false, error: 'Authentication required. Please sign in with Google as an administrator.' });
+  }
+
+  try {
+    let users: any[] = [];
+    try {
+      const snap = await runWithDbFallback(async (activeDb) => {
+        return await activeDb.collection('users').orderBy('email', 'asc').get();
+      });
+      users = snap.docs.map(doc => ({ uid: doc.id, ...doc.data() }));
+    } catch (dbErr) {
+      users = Object.values(inMemoryUsers);
+    }
     return res.json({ success: true, users });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
@@ -463,45 +1044,63 @@ app.get('/api/admin/users', async (req, res): Promise<any> => {
 
 // Admin list telemetry logs
 app.get('/api/admin/logs', async (req, res): Promise<any> => {
-  const token = req.headers['x-admin-token'];
-  if (token !== ADMIN_SESSION_TOKEN) {
-    return res.status(403).json({ success: false, error: 'Unauthorized admin access' });
+  const isAdmin = await verifyAdmin(req);
+  if (!isAdmin) {
+    return res.status(401).json({ success: false, error: 'Authentication required. Please sign in with Google as an administrator.' });
   }
 
   try {
-    if (!getFirestoreDb()) return res.json({ success: true, logs: [] });
-    const snap = await runWithDbFallback(async (activeDb) => {
-      return await activeDb.collection('transcription_logs').orderBy('timestamp', 'desc').limit(200).get();
-    });
-    const logs = snap.docs.map(doc => {
-      const d = doc.data();
-      let timestamp = d.timestamp;
-      if (timestamp && typeof timestamp.toDate === 'function') {
-        timestamp = timestamp.toDate().toISOString();
-      }
-      return { id: doc.id, ...d, timestamp };
-    });
+    let logs: any[] = [];
+    try {
+      const snap = await runWithDbFallback(async (activeDb) => {
+        return await activeDb.collection('transcription_logs').orderBy('timestamp', 'desc').limit(200).get();
+      });
+      logs = snap.docs.map(doc => {
+        const d = doc.data();
+        let timestamp = d.timestamp;
+        if (timestamp && typeof timestamp.toDate === 'function') {
+          timestamp = timestamp.toDate().toISOString();
+        }
+        return { id: doc.id, ...d, timestamp };
+      });
+    } catch (dbErr) {
+      logs = [...inMemoryLogs];
+    }
     return res.json({ success: true, logs });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
 });
 
+// Admin get audit logs list
+app.get('/api/admin/audit-logs', async (req, res): Promise<any> => {
+  const isAdmin = await verifyAdmin(req);
+  if (!isAdmin) {
+    return res.status(401).json({ success: false, error: 'Authentication required.' });
+  }
+  return res.json({ success: true, auditLogs });
+});
+
 // Admin reset daily count
 app.post('/api/admin/reset-limit', async (req, res): Promise<any> => {
-  const token = req.headers['x-admin-token'];
-  if (token !== ADMIN_SESSION_TOKEN) {
-    return res.status(403).json({ success: false, error: 'Unauthorized admin access' });
+  const isAdmin = await verifyAdmin(req);
+  if (!isAdmin) {
+    return res.status(401).json({ success: false, error: 'Authentication required. Please sign in with Google as an administrator.' });
   }
 
   const { uid } = req.body;
   try {
-    if (!getFirestoreDb()) return res.status(400).json({ success: false, error: 'Database not initialized' });
-    await runWithDbFallback(async (activeDb) => {
-      await activeDb.collection('users').doc(uid).update({
-        dailyCount: 0
+    try {
+      await runWithDbFallback(async (activeDb) => {
+        await activeDb.collection('users').doc(uid).update({
+          dailyCount: 0
+        });
       });
-    });
+    } catch (dbErr) { /* silent fallback */ }
+
+    if (inMemoryUsers[uid]) {
+      inMemoryUsers[uid].dailyCount = 0;
+    }
     return res.json({ success: true });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
@@ -510,19 +1109,42 @@ app.post('/api/admin/reset-limit', async (req, res): Promise<any> => {
 
 // Admin toggle role
 app.post('/api/admin/set-role', async (req, res): Promise<any> => {
-  const token = req.headers['x-admin-token'];
-  if (token !== ADMIN_SESSION_TOKEN) {
-    return res.status(403).json({ success: false, error: 'Unauthorized admin access' });
+  const isAdmin = await verifyAdmin(req);
+  if (!isAdmin) {
+    return res.status(401).json({ success: false, error: 'Authentication required. Please sign in with Google as an administrator.' });
   }
 
   const { uid, role } = req.body;
+  
+  // Protect owner from being demoted
+  let targetEmail = '';
+  if (inMemoryUsers[uid]) {
+    targetEmail = inMemoryUsers[uid].email;
+  }
+
   try {
-    if (!getFirestoreDb()) return res.status(400).json({ success: false, error: 'Database not initialized' });
-    await runWithDbFallback(async (activeDb) => {
-      await activeDb.collection('users').doc(uid).update({
-        role: role === 'admin' ? 'admin' : 'user'
+    try {
+      await runWithDbFallback(async (activeDb) => {
+        const userDoc = await activeDb.collection('users').doc(uid).get();
+        if (userDoc.exists) {
+          targetEmail = userDoc.data()?.email || '';
+        }
+        if (targetEmail.toLowerCase() === 'ramjitinvestments@gmail.com') {
+          return; // Skip database update
+        }
+        await activeDb.collection('users').doc(uid).update({
+          role: role
+        });
       });
-    });
+    } catch (dbErr) { /* silent fallback */ }
+
+    if (targetEmail.toLowerCase() === 'ramjitinvestments@gmail.com') {
+      return res.json({ success: true, message: 'Owner role preserved' });
+    }
+
+    if (inMemoryUsers[uid]) {
+      inMemoryUsers[uid].role = role;
+    }
     return res.json({ success: true });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
@@ -531,19 +1153,85 @@ app.post('/api/admin/set-role', async (req, res): Promise<any> => {
 
 // Admin toggle user disabled/enabled status
 app.post('/api/admin/toggle-user-status', async (req, res): Promise<any> => {
-  const token = req.headers['x-admin-token'];
-  if (token !== ADMIN_SESSION_TOKEN) {
-    return res.status(403).json({ success: false, error: 'Unauthorized admin access' });
+  const isAdmin = await verifyAdmin(req);
+  if (!isAdmin) {
+    return res.status(401).json({ success: false, error: 'Authentication required. Please sign in with Google as an administrator.' });
   }
 
   const { uid, disabled } = req.body;
+  
+  // Protect owner from being disabled
+  let targetEmail = '';
+  if (inMemoryUsers[uid]) {
+    targetEmail = inMemoryUsers[uid].email;
+  }
+
   try {
-    if (!getFirestoreDb()) return res.status(400).json({ success: false, error: 'Database not initialized' });
-    await runWithDbFallback(async (activeDb) => {
-      await activeDb.collection('users').doc(uid).update({
-        disabled: !!disabled
+    try {
+      await runWithDbFallback(async (activeDb) => {
+        const userDoc = await activeDb.collection('users').doc(uid).get();
+        if (userDoc.exists) {
+          targetEmail = userDoc.data()?.email || '';
+        }
+        if (targetEmail.toLowerCase() === 'ramjitinvestments@gmail.com') {
+          return; // Skip database update
+        }
+        await activeDb.collection('users').doc(uid).update({
+          disabled: !!disabled,
+          enabled: !disabled
+        });
       });
-    });
+    } catch (dbErr) { /* silent fallback */ }
+
+    if (targetEmail.toLowerCase() === 'ramjitinvestments@gmail.com') {
+      return res.json({ success: true, message: 'Owner status preserved' });
+    }
+
+    if (inMemoryUsers[uid]) {
+      inMemoryUsers[uid].disabled = !!disabled;
+    }
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Admin delete user
+app.post('/api/admin/delete-user', async (req, res): Promise<any> => {
+  const isAdmin = await verifyAdmin(req);
+  if (!isAdmin) {
+    return res.status(401).json({ success: false, error: 'Authentication required. Please sign in with Google as an administrator.' });
+  }
+
+  const { uid } = req.body;
+  
+  // Protect owner from being deleted
+  let targetEmail = '';
+  if (inMemoryUsers[uid]) {
+    targetEmail = inMemoryUsers[uid].email;
+  }
+
+  try {
+    try {
+      await runWithDbFallback(async (activeDb) => {
+        const userDoc = await activeDb.collection('users').doc(uid).get();
+        if (userDoc.exists) {
+          targetEmail = userDoc.data()?.email || '';
+        }
+        if (targetEmail.toLowerCase() === 'ramjitinvestments@gmail.com') {
+          return; // Skip database update
+        }
+        await activeDb.collection('users').doc(uid).delete();
+      });
+    } catch (dbErr) { /* silent fallback */ }
+
+    if (targetEmail.toLowerCase() === 'ramjitinvestments@gmail.com') {
+      return res.json({ success: true, message: 'Owner preservation enforced' });
+    }
+
+    if (inMemoryUsers[uid]) {
+      delete inMemoryUsers[uid];
+    }
     return res.json({ success: true });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
@@ -591,6 +1279,11 @@ app.use(express.static(path.join(process.cwd(), 'public')));
 app.post('/api/upload', async (req, res): Promise<any> => {
   console.log('[Upload] [Upload started]');
   try {
+    const authCheck = await verifyUserAndQuota(req, false);
+    if (!authCheck.success) {
+      return res.status(403).json({ success: false, error: authCheck.error });
+    }
+
     const { videoBase64, fileName } = req.body;
     if (!videoBase64) {
       console.warn('[Upload] [Errors] No video data received');
@@ -1336,6 +2029,9 @@ async function downloadDemoVideos() {
 }
 
 async function init() {
+  // Load system and security configurations on start
+  await loadSystemSettings();
+
   // Pre-fetch vertical and landscape demo video assets completely locally
   // to serve same-origin CORS-proof streams so browser canvas drawing works natively.
   // Executed asynchronously in the background to minimize cold starts and reduce startup time on Cloud Run.

@@ -5,6 +5,10 @@
       "description": "User account details, role, and transcription quota tracking",
       "type": "object",
       "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase user unique identifier"
+        },
         "email": {
           "type": "string",
           "description": "Primary email of the user"
@@ -16,6 +20,10 @@
         "photoURL": {
           "type": "string",
           "description": "User profile avatar image URL"
+        },
+        "provider": {
+          "type": "string",
+          "description": "Authentication provider ID"
         },
         "dailyCount": {
           "type": "integer",
@@ -32,6 +40,32 @@
         "totalTranscribes": {
           "type": "integer",
           "description": "Total transcriptions performed across all time"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the user profile is active"
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": "Whether the user profile has been suspended"
+        },
+        "subscription": {
+          "type": "string",
+          "description": "User subscription status"
+        },
+        "plan": {
+          "type": "string",
+          "description": "User tier pricing plan"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of user registration"
+        },
+        "lastLogin": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last sign-in session"
         },
         "lastUpdated": {
           "type": "string",
