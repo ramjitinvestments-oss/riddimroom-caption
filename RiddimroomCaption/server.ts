@@ -512,10 +512,12 @@ app.get('/api/user/status', async (req, res): Promise<any> => {
               dailyCount = data.dailyCount || 0;
             }
 
-            // Auto-correct role for the owner if stored incorrectly
+            // Auto-correct role for the owner if stored incorrectly and update lastLogin
+            const updates: any = { lastLogin: FieldValue.serverTimestamp() };
             if (isOwnerAdmin && data.role !== 'admin') {
-              await userRef.update({ role: 'admin' }).catch(e => { /* silent fallback */ });
+              updates.role = 'admin';
             }
+            await userRef.update(updates).catch(e => { /* silent fallback */ });
           }
         } else {
           // Create user on first sign-in

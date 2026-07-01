@@ -72,6 +72,7 @@ export default function App() {
   const [authIdToken, setAuthIdToken] = useState<string | null>(null);
   const [userQuota, setUserQuota] = useState<{ dailyCount: number; maxFree: number; isNoLimit: boolean; role: string; disabled: boolean } | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
+  const [isAccountDisabled, setIsAccountDisabled] = useState<boolean>(false);
 
   // Admin Panel States
   const [isAdminOpen, setIsAdminOpen] = useState<boolean>(false);
@@ -418,13 +419,19 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         if (data.success && data.user) {
+          const isDisabled = data.user.enabled === false || data.user.disabled === true;
+          if (isDisabled) {
+            setIsAccountDisabled(true);
+            await signOut(auth);
+            return;
+          }
           setUserQuota({
             dailyCount: data.user.dailyCount || 0,
             maxFree: 2,
             isNoLimit: data.user.isNoLimit || false,
             role: data.user.role || 'user',
-            disabled: data.user.disabled || false,
-            enabled: data.user.enabled !== false
+            disabled: false,
+            enabled: true
           });
           if (data.user.role === 'admin' || data.user.email?.toLowerCase() === 'ramjitinvestments@gmail.com') {
             setIsAdminAuthenticated(true);
@@ -442,6 +449,7 @@ export default function App() {
       setIsAuthLoading(true);
       setCurrentUser(user);
       if (user) {
+        setIsAccountDisabled(false);
         try {
           const token = await user.getIdToken(true);
           setAuthIdToken(token);
@@ -457,6 +465,27 @@ export default function App() {
     });
     return () => unsubscribe();
   }, []);
+
+  // Redirect unauthenticated users
+  useEffect(() => {
+    if (!isAuthLoading && !currentUser && currentPath !== '/login') {
+      navigateTo('/login');
+    }
+  }, [isAuthLoading, currentUser, currentPath, navigateTo]);
+
+  // Redirect authenticated users from login page
+  useEffect(() => {
+    if (!isAuthLoading && currentUser && currentPath === '/login') {
+      navigateTo('/dashboard');
+    }
+  }, [isAuthLoading, currentUser, currentPath, navigateTo]);
+
+  // Redirect non-admin users from admin page
+  useEffect(() => {
+    if (!isAuthLoading && currentUser && currentPath === '/admin' && currentUser.email?.toLowerCase() !== 'ramjitinvestments@gmail.com') {
+      navigateTo('/dashboard');
+    }
+  }, [isAuthLoading, currentUser, currentPath, navigateTo]);
 
   // Google, Email and Admin Authentication Handlers
   const handleGoogleLogin = async () => {
@@ -2388,12 +2417,38 @@ export default function App() {
     );
   }
 
+  if (isAccountDisabled) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-[#070707] text-white p-6">
+        <div className="max-w-md w-full bg-[#0e0e13] border border-red-500/20 rounded-2xl p-8 text-center space-y-6 shadow-2xl">
+          <div className="w-16 h-16 bg-red-500/10 border border-red-500/20 text-red-400 rounded-2xl flex items-center justify-center mx-auto shadow-inner">
+            <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m0-8V5m0 11h.01M12 2a10 10 0 110 20 10 10 0 010-20z" />
+            </svg>
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-lg font-black text-white tracking-tight uppercase text-red-400 animate-pulse">Access Restrained</h2>
+            <p className="text-xs text-white/60 leading-relaxed">
+              Your account has been disabled. Please contact the administrator.
+            </p>
+          </div>
+          <div className="pt-2">
+            <button
+              onClick={() => {
+                setIsAccountDisabled(false);
+                navigateTo('/login');
+              }}
+              className="w-full py-2.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-xl transition-all shadow-lg shadow-red-600/10 active:scale-[0.98]"
+            >
+              Back to Login
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (!currentUser) {
-    if (currentPath !== '/login') {
-      setTimeout(() => {
-        navigateTo('/login');
-      }, 0);
-    }
     return (
       <LoginPage
         onGoogleLogin={handleGoogleLogin}
@@ -2408,41 +2463,11 @@ export default function App() {
     );
   }
 
-  if (currentUser && (userQuota?.disabled || userQuota?.enabled === false)) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-[#070707] text-white p-6">
-        <div className="max-w-md w-full bg-[#0e0e13] border border-red-500/20 rounded-2xl p-8 text-center space-y-6 shadow-2xl">
-          <div className="w-16 h-16 bg-red-500/10 border border-red-500/20 text-red-400 rounded-2xl flex items-center justify-center mx-auto shadow-inner">
-            <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m0-8V5m0 11h.01M12 2a10 10 0 110 20 10 10 0 010-20z" />
-            </svg>
-          </div>
-          <div className="space-y-2">
-            <h2 className="text-lg font-black text-white tracking-tight uppercase">Access Restrained</h2>
-            <p className="text-xs text-white/60 leading-relaxed">
-              Your registered user profile has been suspended or disabled by the system administrator. Please request support clearance if you believe this is an error.
-            </p>
-          </div>
-          <div className="pt-2">
-            <button
-              onClick={handleGoogleLogout}
-              className="w-full py-2.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-xl transition-all shadow-lg shadow-red-600/10 active:scale-[0.98]"
-            >
-              Sign Out from Profile
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (currentPath === '/login') {
-    setTimeout(() => {
-      navigateTo('/dashboard');
-    }, 0);
-  }
-
   if (currentPath === '/admin') {
+    if (currentUser.email?.toLowerCase() !== 'ramjitinvestments@gmail.com') {
+      return null;
+    }
+
     return (
       <ProtectedRoute
         currentUser={currentUser}
