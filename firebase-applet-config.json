@@ -1,10 +1,10 @@
 {
-  "projectId": "centering-dynamics-plsxp",
-  "appId": "1:822522966517:web:dae637f6748c47172230bc",
-  "apiKey": "AIzaSyCqYhrA8fcUZRotmVYOWaHDtJ2lWBlJkDM",
-  "authDomain": "centering-dynamics-plsxp.firebaseapp.com",
+  "projectId": "riddimroom-caption",
+  "appId": "1:505988183150:web:a7143c3d72678a3942e27f",
+  "apiKey": "AIzaSyAY24yVadAimapLY2qDup0YGXQqK-pUD1s",
+  "authDomain": "riddimroom-caption.firebaseapp.com",
   "firestoreDatabaseId": "ai-studio-riddimroomcaptio-66039253-8f3a-4b30-95ab-6ba6f4d6d401",
-  "storageBucket": "centering-dynamics-plsxp.firebasestorage.app",
-  "messagingSenderId": "822522966517",
-  "measurementId": ""
+  "storageBucket": "riddimroom-caption.firebasestorage.app",
+  "messagingSenderId": "505988183150",
+  "measurementId": "G-X0F83EK5DS"
 }

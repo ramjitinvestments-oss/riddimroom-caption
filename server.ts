@@ -52,7 +52,7 @@ try {
   console.warn('[Firebase Admin] Application Default Credentials failed, attempting credential-less or project-only initialization:', err.message);
   try {
     const envProjectId = process.env.FIREBASE_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT;
-    const fallbackProjectId = envProjectId || 'centering-dynamics-plsxp';
+    const fallbackProjectId = envProjectId || 'riddimroom-caption';
     firebaseAdminApp = initializeApp({
       projectId: fallbackProjectId
     });
@@ -169,6 +169,11 @@ async function verifyAdmin(req: express.Request): Promise<boolean> {
   }
 
   try {
+    console.log("===== FIREBASE DEBUG =====");
+console.log("Env Project:", process.env.FIREBASE_PROJECT_ID);
+console.log("GOOGLE_CLOUD_PROJECT:", process.env.GOOGLE_CLOUD_PROJECT);
+console.log("GCLOUD_PROJECT:", process.env.GCLOUD_PROJECT);
+console.log("==========================");
     const decodedToken = await authAdmin.verifyIdToken(idToken);
     const email = decodedToken.email?.toLowerCase() || '';
     const uid = decodedToken.uid;
