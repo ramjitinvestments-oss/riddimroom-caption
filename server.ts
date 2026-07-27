@@ -6,6 +6,7 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import cors from 'cors';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
@@ -392,6 +393,14 @@ async function verifyUserAndQuota(req: express.Request, increment: boolean = fal
 }
 
 const app = express();
+app.use(cors({
+  origin: [
+    'https://caption.riddimroom.com',
+    'http://localhost:5173',
+    'http://localhost:3000'
+  ],
+  credentials: true
+}));
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 // Set up JSON body limits to support video uploads (e.g. max 50MB base64 video)
