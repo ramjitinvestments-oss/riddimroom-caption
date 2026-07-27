@@ -1388,7 +1388,7 @@ export default function App() {
           headers['Authorization'] = `Bearer ${authIdToken}`;
         }
 
-        const uploadRes = await fetch('/api/upload', {
+        const uploadRes = await fetch('https://riddimroom-caption-api-505988183150.us-central1.run.app/api/upload', {
           method: 'POST',
           headers,
           body: JSON.stringify({ videoBase64: base64Data, fileName: file.name })
@@ -1547,7 +1547,7 @@ export default function App() {
       });
 
       // Call single-shot high accuracy full video transcriber endpoint with metadata duration
-      const response = await fetch('/api/transcribe', {
+      const response = await fetch('https://riddimroom-caption-api-505988183150.us-central1.run.app/api/transcribe', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
