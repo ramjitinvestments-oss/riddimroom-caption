@@ -1,0 +1,16 @@
+{
+  "name": "EventCam Live",
+  "short_name": "EventCam",
+  "description": "Premium EventCam Live branded with Riddim Room colors.",
+  "start_url": "/?app=eventcam",
+  "display": "standalone",
+  "background_color": "#0C0D0E",
+  "theme_color": "#FFD100",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
