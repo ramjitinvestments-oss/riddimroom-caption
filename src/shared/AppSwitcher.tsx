@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react';
 import qrcode from 'qrcode-generator';
 import type { AppId } from './chooseApp';
 import * as cap from './captions';
 import * as gal from './gallery';
+const CaptionStudio = lazy(() => import('./captionStudio'));
 
 const LABEL: Record<AppId, string> = { caption: 'Live Caption', eventcam: 'EventCam' };
 const btn: CSSProperties = { background: 'rgba(0,0,0,0.7)', color: '#fff', border: '1px solid rgba(255,255,255,0.25)', borderRadius: 999, padding: '8px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', textAlign: 'left', backdropFilter: 'blur(6px)' };
@@ -80,6 +81,7 @@ function CaptionsPanel() {
 }
 
 function GalleryPanel() {
+  const [studio, setStudio] = useState<gal.GalleryItem | null>(null);
   const items = useSyncExternalStore(gal.subscribe, gal.getItems, gal.getItems);
   const urls = useMemo(() => items.map((i) => URL.createObjectURL(i.blob)), [items]);
   useEffect(() => () => { urls.forEach((u) => URL.revokeObjectURL(u)); }, [urls]);
@@ -92,6 +94,7 @@ function GalleryPanel() {
     const f = new File([it.blob], `riddimroom_${it.ts}.${ext(it.blob, it.kind)}`, { type: it.blob.type });
     try { if ((navigator as any).canShare?.({ files: [f] })) await (navigator as any).share({ files: [f] }); } catch { /* cancelled */ }
   };
+  if (studio) return <Suspense fallback={<div>Loading…</div>}><CaptionStudio item={studio} onClose={() => setStudio(null)} /></Suspense>;
   if (show >= 0 && photos[show % Math.max(photos.length, 1)]) {
     return (
       <div style={{ position: 'fixed', inset: 0, zIndex: 10001, background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShow(-1)}>
@@ -104,13 +107,14 @@ function GalleryPanel() {
     <div style={{ display: 'grid', gap: 12 }}>
       <div style={{ fontSize: 13, opacity: 0.75 }}>The last {items.length ? items.length : 'few'} captures from this device (up to 30). They stay on this device only.</div>
       {!items.length && <div style={{ opacity: 0.6 }}>Nothing yet. Take a photo or video and it shows up here.</div>}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(110px,1fr))', gap: 8 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(130px,1fr))', gap: 8 }}>
         {[...items].reverse().map((it) => { const idx = items.indexOf(it); return (
           <div key={it.id} style={{ display: 'grid', gap: 4 }}>
             {it.kind === 'photo' ? <img src={urls[idx]} alt="" style={{ width: '100%', aspectRatio: '3/4', objectFit: 'cover', borderRadius: 8 }} /> : <video src={urls[idx]} muted playsInline style={{ width: '100%', aspectRatio: '3/4', objectFit: 'cover', borderRadius: 8 }} />}
-            <div style={{ display: 'flex', gap: 4 }}>
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
               <a style={{ ...btn, padding: '4px 8px', fontSize: 11, textDecoration: 'none' }} href={urls[idx]} download={`riddimroom_${it.ts}.${ext(it.blob, it.kind)}`}>Save</a>
               <button style={{ ...btn, padding: '4px 8px', fontSize: 11 }} onClick={() => share(it)}>Share</button>
+              {it.kind === 'video' && <button style={{ ...btn, padding: '4px 8px', fontSize: 11 }} onClick={() => setStudio(it)}>Captions</button>}
             </div>
           </div>); })}
       </div>
