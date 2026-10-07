@@ -124,7 +124,11 @@ export function currentText(now = Date.now(), holdMs = 5000): string {
 // Paint captions onto a canvas (called every frame by EventCam, so photos and videos include them).
 export function drawCaption(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) {
   if (!state.running) return;
-  const text = currentText();
+  drawCaptionText(ctx, canvas, currentText());
+}
+
+// bottomFrac = where the caption box ends, as a fraction of the height (0.94 = near the bottom).
+export function drawCaptionText(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, text: string, bottomFrac = 0.94) {
   if (!text) return;
   const w = canvas.width, h = canvas.height;
   const size = Math.round(Math.min(w, h) * 0.05);
@@ -139,7 +143,7 @@ export function drawCaption(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasEle
   if (cur) lines.push(cur);
   const shown = lines.slice(-3); const lh = size * 1.25; const boxH = shown.length * lh + size * 0.6;
   const boxW = Math.min(maxW + size, Math.max(...shown.map((l) => ctx.measureText(l).width)) + size * 1.2);
-  const cx = w / 2; const bottom = h * 0.88; const top = bottom - boxH;
+  const cx = w / 2; const bottom = h * bottomFrac; const top = bottom - boxH;
   ctx.fillStyle = 'rgba(0,0,0,0.55)';
   const r = size * 0.4; const x = cx - boxW / 2;
   ctx.beginPath(); ctx.moveTo(x + r, top); ctx.arcTo(x + boxW, top, x + boxW, bottom, r); ctx.arcTo(x + boxW, bottom, x, bottom, r);
