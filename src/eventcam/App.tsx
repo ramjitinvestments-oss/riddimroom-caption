@@ -1368,6 +1368,7 @@ export default function App() {
       ctx.restore();
     }
     drawLogo(ctx); drawText(ctx);
+    (window as any).__rrDrawCaption?.(ctx, canvas);
     rafIdRef.current = requestAnimationFrame(drawFrame);
   }, [dragging, appState, logoReady, selectedElement, activeSelection, isRecording, facingMode, previewBgId, isSimulatedCamera]);
 
@@ -1443,7 +1444,7 @@ export default function App() {
     if (captureMode==='photo') {
       const canvas=previewCanvasRef.current; if (!canvas) return;
       isCapturingRef.current=true; drawFrame(); setIsFlashing(true);
-      const dataUrl=canvas.toDataURL('image/png'); const link=document.createElement('a'); link.href=dataUrl; link.download=`eventcam_${Date.now()}.png`; link.click();
+      const dataUrl=canvas.toDataURL('image/png'); const link=document.createElement('a'); link.href=dataUrl; link.download=`eventcam_${Date.now()}.png`; link.click(); (window as any).__rrOnCapture?.(dataUrl,'photo');
       incrementUserCaptureCount('photo'); isCapturingRef.current=false; setTimeout(()=>setIsFlashing(false),200);
       confetti({particleCount:150,spread:70,origin:{y:0.9}});
     } else { if (isRecording) stopRecording(); else startRecording(); }
@@ -1482,7 +1483,7 @@ export default function App() {
       recorder.onstop=()=>{
         const finalType=recorder.mimeType||mimeType; const blob=new Blob(recordedChunksRef.current,{type:finalType}); const url=URL.createObjectURL(blob); const link=document.createElement('a'); link.href=url;
         const isMp4=finalType.toLowerCase().includes('mp4')||finalType.toLowerCase().includes('avc1'); const extension=isMp4?'mp4':'webm';
-        link.download=`eventcam_recording_${Date.now()}.${extension}`; link.click(); URL.revokeObjectURL(url); incrementUserCaptureCount('video');
+        link.download=`eventcam_recording_${Date.now()}.${extension}`; link.click(); (window as any).__rrOnCapture?.(blob,'video'); URL.revokeObjectURL(url); incrementUserCaptureCount('video');
         setIsRecording(false); setRecordingTime(0); if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
         if (audioContextRef.current) { if (audioContextRef.current.state!=='closed') audioContextRef.current.close().catch(e=>console.error('Error closing AudioContext:',e)); audioContextRef.current=null; }
       };
